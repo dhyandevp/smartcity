@@ -12,6 +12,7 @@ configured; the Pi remembers each sender's IP to send commands back.
 | `8767` | Pi → motor node | Motor commands |
 | `8768` | Pi → traffic node | Traffic commands |
 | `8769` | Pi → status display | City status for the OLED, once a second |
+| `8770` | Pi → seismic node | `{"ack":"seismic"}` every 2 s, so the node knows the Pi hears it |
 | `8765` | browser → Pi (HTTP) | Dashboard page, `/stream` (Server-Sent Events), `/data`, `/history` |
 
 ## Messages from the nodes (port 8766)

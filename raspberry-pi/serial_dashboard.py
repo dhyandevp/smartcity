@@ -85,9 +85,10 @@ QUAKE_MOVE_CM = 4.0       # ultrasonic distance jump that counts as "big movemen
 QUAKE_PULSES = 2          # vibration flips in one 0.2 s report that count as "shaking"
 QUAKE_BOTH_SEC = 0.5      # movement AND shaking both on together this long -> earthquake (same rule as the mountain)
 QUAKE_WINDOW = 1.0        # nothing for this long = calm (used to stop the alert)
+SEISMIC_ACK_PORT = 8770   # we answer the seismic node here, so it knows the Pi hears it
 QUAKE_CLEAR_SEC = 30      # no movement and no shaking this long -> earthquake alert stops by itself
 seismic = {"seen": None, "ip": None, "vib": False, "pulses": 0, "cm": None, "base": None, "move": 0.0,
-           "intensity": 0, "shake_at": None, "move_at": None, "both": False}
+           "intensity": 0, "shake_at": None, "move_at": None, "both": False, "ack_at": 0}
 quake = {"active": False, "since": None, "both_since": None, "calm_since": None, "armed": True, "peak": 0}
 
 
@@ -282,6 +283,14 @@ def apply_seismic(data, addr):
         if quake["active"]:
             quake["peak"] = max(quake["peak"], seismic["intensity"])
         quake_tick(now)
+        ack = now - seismic["ack_at"] >= 2
+        if ack:
+            seismic["ack_at"] = now
+    if ack:                                        # "I hear you" (at most every 2 s)
+        try:
+            cmd_sock.sendto(b'{"ack":"seismic"}', (addr[0], SEISMIC_ACK_PORT))
+        except OSError:
+            pass
     broadcast()
     return True
 

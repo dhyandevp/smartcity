@@ -15,6 +15,8 @@
 //   * Light:    1 report a second when calm, 5 a second while active (+5 s after)
 //   * Reliable: wifi reconnects by itself, a watchdog reboots the board if it ever
 //               freezes, and it keeps reporting vibration if the ultrasonic is unplugged
+//   * Sure:     finds the Pi by name (admin.local) and sends straight to it as well as
+//               broadcasting; the Pi answers, and the Serial Monitor says "Pi heard us"
 //
 // ---- Wiring (labels 25 / P25 / IO25 / D25 all mean GPIO25) ----
 //   SW-420 vibration : VCC -> 3V3   GND -> GND   DO   -> 27
@@ -24,14 +26,18 @@
 
 #include <WiFi.h>
 #include <WiFiUdp.h>
+#include <ESPmDNS.h>
 #include <esp_task_wdt.h>
 
 // ======== FILL THESE IN (same wifi the Pi is on) ========
-const char *WIFI_SSID = "YOUR_WIFI_NAME";
-const char *WIFI_PASS = "YOUR_WIFI_PASSWORD";
+const char *WIFI_SSID = "rishi";
+const char *WIFI_PASS = "12345678";
 // ========================================================
 
 const unsigned int UDP_PORT = 8766;       // the Pi listens on this port
+const unsigned int ACK_PORT = 8770;       // the Pi answers us here ("Pi heard us")
+const char *PI_HOST = "admin";            // the Pi's name (admin.local); found automatically
+const char *PI_IP_FIXED = "";             // optional: the Pi's IP, e.g. "192.168.43.120" if the name is not found
 
 const int PIN_VIBRATION = 27;             // SW-420 DO
 const int PIN_TRIG      = 26;
@@ -82,7 +88,9 @@ int windowN = 0;
 float cmNow = -1, baseCm = -1, moveMax = 0;
 bool vibSeen = false, pingPending = false, echoStuck = false, wasActive = false;
 unsigned long pingAt = 0, lastEcho = 0, lastSend = 0, activeUntil = 0, stillSince = 0;
-unsigned long lastWifiTry = 0, lastHealth = 0;
+unsigned long lastWifiTry = 0, lastHealth = 0, lastAck = 0, lastLookup = 0, wifiLostAt = 0;
+IPAddress piIP;                           // learned from the Pi's answer, its name or PI_IP_FIXED
+bool piKnown = false, udpReady = false;
 uint32_t pings = 0, echoes = 0, flipsThisSec = 0, sentThisSec = 0;
 
 float median5() {
@@ -144,6 +152,56 @@ void ultrasonicTick(unsigned long now) {
   }
 }
 
+// ---- networking helpers ----
+bool piAnswering(unsigned long now) { return lastAck != 0 && now - lastAck < 5000; }
+
+bool sendTo(IPAddress to, const char *body, int n) {
+  if (!udp.beginPacket(to, UDP_PORT)) return false;
+  udp.write((const uint8_t *)body, n);
+  return udp.endPacket() == 1;
+}
+
+// wifi just connected: open our UDP port and start mDNS so we can find the Pi by name
+void networkUp() {
+  udp.stop();
+  udpReady = udp.begin(ACK_PORT) == 1;
+  MDNS.end();
+  MDNS.begin("smartcity-seismic");
+  lastLookup = 0;
+  if (PI_IP_FIXED[0] && piIP.fromString(PI_IP_FIXED)) piKnown = true;
+  Serial.printf("Connected, my IP: %s  |  UDP %s\n", WiFi.localIP().toString().c_str(), udpReady ? "ready" : "FAILED");
+}
+
+// the Pi answers {"ack":"seismic"}: now we know for sure it hears us, and its exact IP
+void checkAnswers(unsigned long now) {
+  int len = udp.parsePacket();
+  while (len > 0) {
+    char buf[48];
+    int r = udp.read(buf, sizeof(buf) - 1);
+    buf[r > 0 ? r : 0] = 0;
+    if (strstr(buf, "\"ack\"")) {
+      if (!piKnown || piIP != udp.remoteIP()) Serial.printf("Pi found at %s\n", udp.remoteIP().toString().c_str());
+      piIP = udp.remoteIP();
+      piKnown = true;
+      lastAck = now;
+    }
+    len = udp.parsePacket();
+  }
+}
+
+// not heard from the Pi: look it up by name (admin.local) every 30 s
+void findPi(unsigned long now) {
+  if (piAnswering(now) || (lastLookup && now - lastLookup < 30000)) return;
+  lastLookup = now;
+  esp_task_wdt_reset();
+  IPAddress ip = MDNS.queryHost(PI_HOST, 1500);
+  if ((uint32_t)ip != 0) {
+    if (!piKnown || piIP != ip) Serial.printf("Pi name %s.local -> %s\n", PI_HOST, ip.toString().c_str());
+    piIP = ip;
+    piKnown = true;
+  }
+}
+
 // ---- report to the Pi ----
 void sendReport(unsigned long now) {
   portENTER_CRITICAL(&mux);
@@ -157,13 +215,12 @@ void sendReport(unsigned long now) {
     int n = snprintf(body, sizeof(body),
                      "{\"seismic\":1,\"vib\":%d,\"pulses\":%lu,\"cm\":%.1f,\"base\":%.1f,\"move\":%.1f}",
                      vibSeen ? 1 : 0, (unsigned long)flips, cmNow, baseCm, moveMax);
-    uint32_t ip = (uint32_t)WiFi.localIP(), mask = (uint32_t)WiFi.subnetMask();
-    udp.beginPacket(IPAddress(ip | ~mask), UDP_PORT);              // this network
-    udp.write((const uint8_t *)body, n);
-    udp.endPacket();
-    udp.beginPacket(IPAddress(255, 255, 255, 255), UDP_PORT);      // everyone (backup)
-    udp.write((const uint8_t *)body, n);
-    udp.endPacket();
+    if (piKnown) sendTo(piIP, body, n);                            // straight to the Pi
+    if (!piAnswering(now)) {                                       // not sure the Pi hears us: also shout
+      uint32_t ip = (uint32_t)WiFi.localIP(), mask = (uint32_t)WiFi.subnetMask();
+      sendTo(IPAddress(ip | ~mask), body, n);                      // this network
+      sendTo(IPAddress(255, 255, 255, 255), body, n);              // everyone
+    }
     sentThisSec++;
   }
   vibSeen = false;
@@ -176,9 +233,14 @@ void healthReport(unsigned long now) {
   else if (echoes == 0) Serial.print("ultrasonic: NO ECHO / missing -> check wires, flat target 10-100 cm, or VCC on 5V");
   else                  Serial.printf("ultrasonic OK: %.1f cm (normal %.1f, %u/%u pings)", cmNow, baseCm,
                                       (unsigned)echoes, (unsigned)pings);
-  Serial.printf("  |  vibration %u flips/s  |  %s, %u reports/s  |  wifi %s\n", (unsigned)flipsThisSec,
+  Serial.printf("  |  vibration %u flips/s  |  %s, %u reports/s  |  wifi %s  |  ", (unsigned)flipsThisSec,
                 now < activeUntil ? "ACTIVE" : "calm", (unsigned)sentThisSec,
                 WiFi.status() == WL_CONNECTED ? "ok" : "RECONNECTING");
+  if (WiFi.status() != WL_CONNECTED) Serial.println("Pi: waiting for wifi");
+  else if (piAnswering(now)) Serial.printf("Pi heard us OK (%s)\n", piIP.toString().c_str());
+  else if (piKnown) Serial.printf("Pi NOT answering (sending to %s + broadcast) -> is the dashboard running?\n",
+                                  piIP.toString().c_str());
+  else Serial.println("Pi NOT answering (broadcast only, Pi not found yet) -> same wifi? dashboard running?");
   pings = echoes = flipsThisSec = sentThisSec = 0;
   echoStuck = false;
 }
@@ -209,8 +271,9 @@ void setup() {
   Serial.print("Connecting to wifi");
   unsigned long t0 = millis();
   while (WiFi.status() != WL_CONNECTED && millis() - t0 < 10000) { delay(250); Serial.print('.'); }
-  if (WiFi.status() == WL_CONNECTED) { Serial.print("\nConnected, my IP: "); Serial.println(WiFi.localIP()); }
-  else Serial.println("\nNo wifi yet (check name/password, 2.4 GHz). Sensors run anyway; retrying in the background.");
+  Serial.println();
+  if (WiFi.status() == WL_CONNECTED) networkUp();
+  else Serial.println("No wifi yet (check name/password, 2.4 GHz). Sensors run anyway; retrying in the background.");
   lastWifiTry = millis();
   startWatchdog();
 }
@@ -240,11 +303,19 @@ void loop() {
   // 4. health check
   if (now - lastHealth >= 1000) { lastHealth = now; healthReport(now); }
 
-  // 5. wifi: auto-reconnect, plus a hard retry every 10 s just in case
-  if (WiFi.status() != WL_CONNECTED && now - lastWifiTry > 10000) {
-    lastWifiTry = now;
-    WiFi.disconnect();
-    WiFi.begin(WIFI_SSID, WIFI_PASS);
+  // 5. wifi + Pi: answers from the Pi, find the Pi, and gentle reconnects
+  if (WiFi.status() == WL_CONNECTED) {
+    if (!udpReady) networkUp();                    // (re)connected: reopen UDP + mDNS
+    wifiLostAt = 0;
+    checkAnswers(now);
+    findPi(now);
+  } else {
+    if (udpReady) { udpReady = false; Serial.println("wifi lost, reconnecting..."); }
+    if (wifiLostAt == 0) wifiLostAt = now;
+    if (now - wifiLostAt > 20000 && now - lastWifiTry > 20000) {   // auto-reconnect stuck: nudge it
+      lastWifiTry = now;
+      WiFi.reconnect();
+    }
   }
   delay(1);
 }

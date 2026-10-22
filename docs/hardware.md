@@ -117,6 +117,10 @@ divider on Echo.
 
 The node reports once a second when calm and 5 times a second while active, sends
 instantly when shaking starts, reconnects wifi by itself and has a watchdog.
+It finds the Pi by name (`PI_HOST = "admin"`, i.e. `admin.local`) and sends straight to
+it; the Pi answers every 2 s and the health line ends with **`Pi heard us OK (ip)`**.
+If it says **`Pi NOT answering`**, check the dashboard is running and both are on the same
+wifi; you can also type the Pi's IP into `PI_IP_FIXED`.
 
 ## 7. Raspberry Pi 3B+
 
