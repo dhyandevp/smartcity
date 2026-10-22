@@ -1676,7 +1676,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
               <span class="icon mint"><svg viewBox="0 0 24 24"><path d="M2 12h3l2-6 3 13 3-16 3 14 2-5h4"/></svg></span>
               <div>
                 <h2>Seismic Monitor</h2>
-                <div class="sub">ESP32 · vibration + ultrasonic</div>
+                <div class="sub">NodeMCU · vibration + ultrasonic</div>
               </div>
             </div>
             <span class="tag" id="seisPill">No data</span>

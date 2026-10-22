@@ -10,7 +10,7 @@ hotspot). Put the wifi name and password at the top of each wifi sketch
 |---|---|
 | Arduino Nano | built in (*Arduino AVR Boards*) |
 | NodeMCU ESP8266 | *esp8266 by ESP8266 Community* (board: **NodeMCU 1.0 (ESP-12E Module)**) |
-| ESP32 / NodeMCU ESP-32S | *esp32 by Espressif Systems* (board: **ESP32 Dev Module**) |
+| ESP32 (motor node) | *esp32 by Espressif Systems* (board: **ESP32 Dev Module**) |
 
 No extra libraries are needed for any sketch.
 
@@ -93,34 +93,37 @@ I2C address `0x3C`. Library-free driver, so nothing to install. Screens rotate e
 Join all grounds (ESP32, driver, battery −). Keep GPIO 0, 2, 12, 15 free.
 Motors stop by themselves after `RUN_SECONDS` (10 s) or if wifi drops.
 
-## 6. Seismic node: NodeMCU ESP-32S v1.1 (`firmware/esp32_seismic_node`)
+## 6. Seismic node: NodeMCU ESP8266 (`firmware/esp8266_seismic_node`)
 
 ![Seismic node wiring](images/seismic_wiring.png)
 
 | Part | Pin |
 |---|---|
-| SW-420 vibration DO | 27 |
-| HC-SR04 Trig | 26 |
-| HC-SR04 Echo | 25 |
+| SW-420 vibration DO | D5 |
+| HC-SR04 Trig | D6 |
+| HC-SR04 Echo | D7 |
 | VCC of both | 3V3 |
-| GND of both | GND |
+| GND of both | G |
+
+D5, D6 and D7 are safe for sensors (avoid D3, D4 and D8: they decide how the NodeMCU boots).
 
 Point the ultrasonic at something flat 10-100 cm away that moves when the "ground"
 shakes. The node learns the normal distance by itself. The Serial Monitor (115200)
 prints a health line every second, for example
-`ultrasonic OK: 30.0 cm (normal 30.0, 25/25 pings) | vibration 0 flips/s | calm, 1 reports/s | wifi ok`.
+`ultrasonic OK: 30.0 cm (normal 30.0, 25/25 pings) | vibration 0 flips/s | calm, 1 reports/s | wifi ok | Pi heard us OK (192.168.43.120)`.
 
-If it says **NO ECHO** on 3.3 V, power the HC-SR04 from 5V/VIN and use the 1 kΩ + 2 kΩ
-divider on Echo.
+If it says **NO ECHO** on 3.3 V, power the HC-SR04 from VIN (5V) and use the
+1 kΩ + 2 kΩ divider on Echo (`Echo → 1 kΩ → D7`, `D7 → 2 kΩ → G`).
 
 **Earthquake:** ground movement of 4 cm or more **and** shaking, together for 0.5 s.
 
 The node reports once a second when calm and 5 times a second while active, sends
-instantly when shaking starts, reconnects wifi by itself and has a watchdog.
-It finds the Pi by name (`PI_HOST = "admin"`, i.e. `admin.local`) and sends straight to
-it; the Pi answers every 2 s and the health line ends with **`Pi heard us OK (ip)`**.
-If it says **`Pi NOT answering`**, check the dashboard is running and both are on the same
-wifi; you can also type the Pi's IP into `PI_IP_FIXED`.
+instantly when shaking starts, reads the ultrasonic with interrupts (no waiting),
+reconnects wifi by itself and relies on the ESP8266's built-in watchdog.
+It broadcasts until the Pi answers, then sends straight to the Pi; the Pi answers every
+2 s and the health line ends with **`Pi heard us OK (ip)`**. If it says
+**`Pi NOT answering`**, check the new dashboard is running on the Pi and both are on the
+same wifi; you can also type the Pi's IP into `PI_IP_FIXED`.
 
 ## 7. Raspberry Pi 3B+
 

@@ -32,7 +32,7 @@ flowchart LR
     MTN["Mountain node<br/>ESP8266 · PIR · vibration · LDR"] -- wifi UDP --> PI
     TRF["Traffic node<br/>ESP8266 · lights · ultrasonic"] <-- wifi UDP --> PI
     MOT["Motor node<br/>ESP32 · L293D · 2 motors"] <-- wifi UDP --> PI
-    SEI["Seismic node<br/>ESP32 · vibration · ultrasonic"] -- wifi UDP --> PI
+    SEI["Seismic node<br/>ESP8266 · vibration · ultrasonic"] -- wifi UDP --> PI
     PI["Raspberry Pi 3B+<br/>serial_dashboard.py"] -- wifi UDP --> OLED["Status display<br/>ESP8266 · OLED"]
     WEB["Open-Meteo<br/>temperature"] --> PI
     PI -- "http :8765" --> BROWSER["Dashboard in any browser<br/>phone · laptop · tablet"]
@@ -56,7 +56,7 @@ smartcity/
 │   ├── esp8266_traffic_node/        # NodeMCU ESP8266: traffic light + HC-SR04
 │   ├── esp8266_oled_node/           # NodeMCU ESP8266: 0.96" OLED status display
 │   ├── esp32_motor_node/            # ESP32: 2 motors with an L293D driver
-│   └── esp32_seismic_node/          # ESP32 (NodeMCU ESP-32S): vibration + HC-SR04
+│   └── esp8266_seismic_node/        # NodeMCU ESP8266: vibration + HC-SR04
 └── docs/                            # guides and screenshots
 ```
 
@@ -69,7 +69,7 @@ smartcity/
 | Traffic | NodeMCU ESP8266 | Red/yellow/green light module, HC-SR04 | wifi |
 | Status display | NodeMCU ESP8266 | 0.96" SSD1306 OLED (I2C) | wifi |
 | Motors | ESP32 DevKit | L293D driver board, 2 DC motors | wifi |
-| Seismic | NodeMCU ESP-32S v1.1 | SW-420 vibration, HC-SR04 | wifi |
+| Seismic | NodeMCU ESP8266 | SW-420 vibration, HC-SR04 | wifi |
 | Hub | Raspberry Pi 3B+ | — | — |
 
 Full wiring for every node: [docs/hardware.md](docs/hardware.md).
