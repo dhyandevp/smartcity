@@ -858,14 +858,13 @@ DASHBOARD_HTML = """<!DOCTYPE html>
   .sub { font-size: 13.5px; color: var(--dim); margin-top: 3px; }
   .chips { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; }
   .greet { font-size: 22px; font-weight: 600; letter-spacing: -.01em; white-space: nowrap; }
-  .topR { display: flex; align-items: center; gap: 14px; margin-left: auto; }
-  .statusRow { display: flex; justify-content: space-between; align-items: center; gap: 12px; margin: -8px 0 26px; }
+  .topR { display: flex; align-items: center; gap: 10px; margin-left: auto; flex-wrap: wrap; justify-content: flex-end; }
+  .topR .greet { margin-right: 6px; }
+  .statusRow { display: flex; align-items: center; gap: 12px; margin: -8px 0 26px; }
   .nodes { flex-wrap: nowrap; gap: 0; background: rgba(255, 255, 255, .6); border-radius: 999px; padding: 4px; min-width: 0;
            overflow-x: auto; scrollbar-width: none; -webkit-overflow-scrolling: touch; }
   .nodes::-webkit-scrollbar { display: none; }
-  @media (max-width: 1100px) {
-    .nodes { -webkit-mask: linear-gradient(90deg, #000 88%, transparent); mask: linear-gradient(90deg, #000 88%, transparent); }
-  }
+  .nodes.more { -webkit-mask: linear-gradient(90deg, #000 88%, transparent); mask: linear-gradient(90deg, #000 88%, transparent); }
   .nodes .chip { background: transparent; padding: 7px 10px; gap: 6px; position: relative; flex: none; }
   .nodes .chip + .chip::before { content: ""; position: absolute; left: 0; top: 9px; bottom: 9px; width: 1px; background: rgba(28, 28, 28, .1); }
   .actions { display: flex; gap: 10px; flex: none; }
@@ -1248,7 +1247,6 @@ DASHBOARD_HTML = """<!DOCTYPE html>
   footer { margin-top: 26px; text-align: center; font-size: 12.5px; color: var(--dim); }
 
   @media (max-width: 1100px) {
-    .statusRow { flex-wrap: wrap; }
     .nodes { max-width: 100%; }
   }
   @media (max-width: 980px) {
@@ -1258,11 +1256,15 @@ DASHBOARD_HTML = """<!DOCTYPE html>
   @media (max-width: 560px) {
     .page { padding: 18px 14px 28px; }
     .greet { display: none; }
-    .top { flex-wrap: nowrap; margin-bottom: 18px; }
+    .top { flex-wrap: wrap; margin-bottom: 18px; gap: 12px; }
+    .topR { width: 100%; margin-left: 0; flex-wrap: nowrap; }
+    .topR .actions { flex: 1; min-width: 0; }
+    .aiLong { display: none; }
+    .actions .chip { overflow: hidden; }
     .chip.clock #clockD { display: none; }
     .chip.clock { padding: 8px 12px; }
     .statusRow { margin: -10px 0 18px; }
-    .actions { width: 100%; }
+
     .actions .chip { flex: 1 1 0; min-width: 0; justify-content: center; padding: 9px 10px; font-size: 12px; }
     #soundBtn { overflow: hidden; text-overflow: ellipsis; display: block; text-align: center; }
     .card { padding: 22px; border-radius: 28px; }
@@ -1291,7 +1293,8 @@ DASHBOARD_HTML = """<!DOCTYPE html>
     .brand { flex: none; }
     .brand h1 { font-size: 18px; }
     .brand .sub { display: none; }
-    .greet { font-size: 15px; flex: none; }
+    .greet { display: none; }
+    .chip.clock #clockD { display: none; }
     .statusRow { margin: -4px 0 14px; }
     .chips { flex-wrap: nowrap; overflow-x: auto; min-width: 0; scrollbar-width: none; -webkit-overflow-scrolling: touch; }
     .chips::-webkit-scrollbar { display: none; }
@@ -1366,6 +1369,10 @@ DASHBOARD_HTML = """<!DOCTYPE html>
     </div>
     <div class="topR">
       <div class="greet" id="greet">Hello</div>
+      <div class="actions">
+        <button class="chip aiChip" id="aiChip" type="button"><i class="aiDot"></i><span>AI<span class="aiLong"> model</span></span><b id="tAi">Running</b></button>
+        <button class="chip" id="soundBtn" type="button">🔔 Tap to enable sound</button>
+      </div>
       <span class="chip clock"><b id="clockT">--:--:--</b><span id="clockD"></span></span>
     </div>
   </header>
@@ -1377,10 +1384,6 @@ DASHBOARD_HTML = """<!DOCTYPE html>
       <span class="chip"><i class="pulse" id="pTr"></i>Traffic <b id="tTr">Waiting</b></span>
       <span class="chip"><i class="pulse" id="pSe"></i>Seismic <b id="tSe">Waiting</b></span>
       <span class="chip"><i class="pulse" id="pMx"></i>Display <b id="tMx">Waiting</b></span>
-    </div>
-    <div class="actions">
-      <button class="chip aiChip" id="aiChip" type="button"><i class="aiDot"></i>AI model <b id="tAi">Running</b></button>
-      <button class="chip" id="soundBtn" type="button">🔔 Tap to enable sound</button>
     </div>
   </div>
 
@@ -2732,6 +2735,14 @@ setInterval(loadHistory, 30000);
   cards.forEach(c => io.observe(c));
   setTimeout(() => show(cards.filter(c => !c.classList.contains("in"))), 4000);   // never leave a card hidden
 })();
+// node strip: fade the right edge only when it really overflows (swipe hint)
+function stripFade() {
+  const n = document.querySelector(".nodes");
+  if (n) n.classList.toggle("more", n.scrollWidth > n.clientWidth + 1 && n.scrollLeft + n.clientWidth < n.scrollWidth - 4);
+}
+window.addEventListener("resize", stripFade);
+document.querySelector(".nodes").addEventListener("scroll", stripFade, {passive: true});
+setInterval(stripFade, 1000);
 setInterval(paint, 1000);
 paint();
 
