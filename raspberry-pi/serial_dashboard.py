@@ -1004,7 +1004,10 @@ DASHBOARD_HTML = """<!DOCTYPE html>
   .knob { position: absolute; top: -26px; left: 0; width: 0; height: 0; transition: left .3s; }
   .knob::before { content: ""; position: absolute; left: -.8px; top: 16px; width: 1.6px; height: 48px; background: var(--ink); }
   .knob::after { content: ""; position: absolute; left: -9px; top: 0; width: 18px; height: 18px; border-radius: 50%; background: var(--lav); border: 1.6px solid var(--ink); }
-  .chart { position: relative; margin-top: auto; height: 130px; }
+  .chart { position: relative; margin-top: auto; flex: 1 1 130px; min-height: 110px; }
+  .tile .gchart { margin-top: 22px; flex: 1 1 90px; min-height: 70px; }
+  .tile .gchart + .hwrap { margin-top: 0; padding-top: 30px; }
+  .cknob.lavk { background: var(--lav); }
   .chart svg { position: absolute; inset: 0; width: 100%; height: 100%; overflow: visible; }
   .chart polyline { fill: none; stroke: var(--ink); stroke-width: 1.8; stroke-linejoin: round; stroke-linecap: round; vector-effect: non-scaling-stroke; }
   .cknob { position: absolute; width: 18px; height: 18px; border-radius: 50%; background: var(--mint); border: 1.6px solid var(--ink); transform: translate(-50%, -50%); display: none; }
@@ -1283,6 +1286,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
     .tl li:nth-child(4n)::before { right: -14px; }
     .tl li:nth-child(2n)::before { right: 0; }
     .ovR { flex-direction: column; }
+    .ovR .tile { flex: none; }
     h2 { font-size: 21px; }
     .big { font-size: 52px; }
     .rainInfo .big { font-size: 58px; }
@@ -1356,7 +1360,8 @@ DASHBOARD_HTML = """<!DOCTYPE html>
     .th .tag { padding: 5px 9px; }
     .hwrap { padding-top: 22px; }
     .hlbl { margin-bottom: 30px; font-size: 13px; }
-    .chart { height: 80px; }
+    .chart { min-height: 70px; }
+    .tile .gchart { min-height: 50px; }
     .mbody { margin-top: 14px; }
     .mstate { font-size: 28px; }
     .rbtn { width: 54px; height: 54px; }
@@ -1430,6 +1435,19 @@ DASHBOARD_HTML = """<!DOCTYPE html>
             <div class="th"><span>Air quality</span><span class="tag" id="t-Gas">No data</span></div>
             <div class="big" id="v-Gas">--</div>
             <div class="tsub" id="l-Gas">Gas sensor A1 / D8</div>
+            <div class="chart gchart">
+              <svg viewBox="0 0 100 40" preserveAspectRatio="none" aria-hidden="true">
+                <defs>
+                  <pattern id="gHatch" patternUnits="userSpaceOnUse" width="5" height="40">
+                    <line x1="0.5" y1="0" x2="0.5" y2="40" stroke="#1c1c1c" stroke-opacity=".22" stroke-width=".5"/>
+                  </pattern>
+                </defs>
+                <polygon id="ar-Gas" points="" fill="#1c1c1c" fill-opacity=".07"/>
+                <polygon id="ah-Gas" points="" fill="url(#gHatch)"/>
+                <polyline id="ln-Gas" points=""/>
+              </svg>
+              <div class="cknob lavk" id="kc-Gas"></div>
+            </div>
             <div class="hwrap">
               <div class="hlbl" id="pct-Gas">Level --</div>
               <div class="hbar">
@@ -1751,7 +1769,7 @@ const tagState = {};     // key -> [text, class] from the latest reading
 const binState = {};     // key -> true/false (motion, vibration)
 const trigAt = {};       // key -> browser time (ms) it was last triggered
 const latest = {Rain: null, Soil: null, Light: null, Gas: null};
-const rainHist = [], soilHist = [];
+const rainHist = [], soilHist = [], gasHist = [];
 let lastRainSample = 0, lastSoilSample = 0;
 let lastRecv = 0, nanoConnected = false, linkLost = false, mSeenAt = 0;
 let wxAt = 0, wxTemp = 0, wxPlace = "";
@@ -1871,21 +1889,23 @@ function drawRain() {
 }
 
 // ---- soil moisture chart (one point a second, the last one is live) ----
-function drawSoil() {
-  const n = soilHist.length;
-  const k = $("k-Soil");
+function drawTrend(key, hist, knobId) {
+  const n = hist.length;
+  const k = $(knobId);
   if (!n) { k.style.display = "none"; return; }
   const step = 96 / (SOIL_LEN - 1);
-  const pts = soilHist.map((v, i) => [98 - (n - 1 - i) * step, 36 - Math.max(0, Math.min(1, v / 1023)) * 30]);
+  const pts = hist.map((v, i) => [98 - (n - 1 - i) * step, 36 - Math.max(0, Math.min(1, v / 1023)) * 30]);
   const line = pts.map(p => p[0].toFixed(2) + "," + p[1].toFixed(2)).join(" ");
   const area = pts[0][0].toFixed(2) + ",40 " + line + " " + pts[n - 1][0].toFixed(2) + ",40";
-  $("ln-Soil").setAttribute("points", line);
-  $("ar-Soil").setAttribute("points", area);
-  $("ah-Soil").setAttribute("points", area);
+  $("ln-" + key).setAttribute("points", line);
+  $("ar-" + key).setAttribute("points", area);
+  $("ah-" + key).setAttribute("points", area);
   k.style.left = pts[n - 1][0] + "%";
   k.style.top = (pts[n - 1][1] / 40 * 100) + "%";
   k.style.display = "block";
 }
+function drawSoil() { drawTrend("Soil", soilHist, "k-Soil"); }
+function drawGasTrend() { drawTrend("Gas", gasHist, "kc-Gas"); }
 
 function sample() {
   const t = Date.now();
@@ -1897,8 +1917,15 @@ function sample() {
     drawRain();
   }
   if (latest.Soil !== null && t - lastSoilSample >= 1000) {
+    if (!soilHist.length) for (let i = 1; i < SOIL_LEN; i++) soilHist.push(latest.Soil);   // start as a full flat line
     soilHist.push(latest.Soil);
     if (soilHist.length > SOIL_LEN) soilHist.shift();
+    if (latest.Gas !== null) {
+      if (!gasHist.length) for (let i = 1; i < SOIL_LEN; i++) gasHist.push(latest.Gas);
+      gasHist.push(latest.Gas);
+      if (gasHist.length > SOIL_LEN) gasHist.shift();
+      drawGasTrend();
+    }
     lastSoilSample = t;
     drawSoil();
   }
@@ -2175,6 +2202,7 @@ function render(data) {
     setVal("Gas", s.raw, "raw");
     setGas(s.raw);
     latest.Gas = s.raw;
+    if (gasHist.length) { gasHist[gasHist.length - 1] = s.raw; drawGasTrend(); }
     $("l-Gas").textContent = s.volt.toFixed(2) + " V · D8 " + s.digital;
     tagState.Gas = s.digital === GAS_WHEN ? ["Gas detected", "warn"] : ["Safe", "ok"];
   }
