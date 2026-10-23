@@ -30,6 +30,10 @@ readings 4 times a second; the Pi reads it directly.
 | Gas sensor (MQ series) | A1 | D8 | 5V, GND |
 | Soil moisture sensor | A3 | D10 | 5V, GND |
 
+Gas is judged from the **analog level** (a higher reading means more gas): **50 % or more =
+Gas detected**, back to Safe below 45 % (`GAS_ALERT_PCT` / `GAS_CLEAR_PCT` in
+`serial_dashboard.py`). The D8 pin is only shown for reference.
+
 Keep D0 / D1 free (USB serial). Temperature is **not** measured here: the Pi gets the
 live temperature from the internet.
 

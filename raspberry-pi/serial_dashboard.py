@@ -95,7 +95,20 @@ quake = {"active": False, "since": None, "both_since": None, "calm_since": None,
 # ---- Status display NodeMCU (OLED, was the 8x8 matrix): says hello, we send it the city status every second ----
 MATRIX_PORT = 8769
 MATRIX_RAIN_WHEN = "LOW"   # rain module DO level that means "raining" (same as WET_WHEN on the page)
-MATRIX_GAS_WHEN = "LOW"    # gas module DO level that means "gas detected" (same as GAS_WHEN on the page)
+GAS_ALERT_PCT = 50         # gas level (analog, 0-100 %) at or above this = "gas detected" (same as on the page)
+GAS_CLEAR_PCT = 45         # ...and back to "safe" only below this (no flicker at the edge)
+_gas_on = False
+
+
+def gas_detected(raw):
+    """Gas alert from the analog level (higher reading = more gas), with a little hysteresis."""
+    global _gas_on
+    pct = raw / 1023 * 100
+    if pct >= GAS_ALERT_PCT:
+        _gas_on = True
+    elif pct < GAS_CLEAR_PCT:
+        _gas_on = False
+    return _gas_on
 matrix = {"seen": None, "ip": None, "screen": None}
 MATRIX_SCREENS = ("wait", "alarm", "quake", "weather", "temp", "air")
 
@@ -357,7 +370,7 @@ def matrix_status():
         s = state["sensors"]
         nano_ok = state["connected"] and state["lastUpdate"] and now - state["lastUpdate"] < 5
         rain = int(s["Rain"]["digital"] == MATRIX_RAIN_WHEN) if nano_ok and "Rain" in s else None
-        gas = int(s["Gas"]["digital"] == MATRIX_GAS_WHEN) if nano_ok and "Gas" in s else None
+        gas = int(gas_detected(s["Gas"]["raw"])) if nano_ok and "Gas" in s else None
         fresh_wx = weather["fetched"] is not None and now - weather["fetched"] < 1200
         temp = round(weather["tempC"], 1) if fresh_wx else None
         alarm_on = int(alarm["active"])
@@ -601,7 +614,7 @@ def history_tick(prev, dt):
         nano_ok = bool(state["connected"] and state["lastUpdate"] and now - state["lastUpdate"] < 5)
         cur = {
             "rain": (s["Rain"]["digital"] == MATRIX_RAIN_WHEN) if nano_ok and "Rain" in s else None,
-            "gasOn": (s["Gas"]["digital"] == MATRIX_GAS_WHEN) if nano_ok and "Gas" in s else None,
+            "gasOn": gas_detected(s["Gas"]["raw"]) if nano_ok and "Gas" in s else None,
             "gas": s["Gas"]["raw"] / 1023 * 100 if nano_ok and "Gas" in s else None,
             "soil": 100 - s["Soil"]["raw"] / 1023 * 100 if nano_ok and "Soil" in s else None,
             "soilDry": (s["Soil"]["digital"] == SOIL_DRY_WHEN) if nano_ok and "Soil" in s else None,
@@ -989,7 +1002,9 @@ DASHBOARD_HTML = """<!DOCTYPE html>
   .ovR { display: flex; flex-direction: row; gap: 16px; min-width: 0; }
   .ovR .tile { flex: 1; min-width: 0; }
   .tile { border-radius: 30px; padding: 24px; display: flex; flex-direction: column; min-height: 290px; }
-  .tile.mint { background: var(--mint); }
+  .tile.mint { background: var(--mint); transition: background-color .5s; }
+  .tile.mint.warn { background: var(--peach); }
+  .tile.warn .tag.warn { background: #fff; }
   .tile.lav { background: var(--lav); }
   .th { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: 8px 10px; font-size: 14.5px; color: rgba(28, 28, 28, .72); }
   .tile .big { font-size: 46px; font-weight: 600; margin-top: 14px; }
@@ -1748,7 +1763,8 @@ DASHBOARD_HTML = """<!DOCTYPE html>
 document.documentElement.classList.add("js-anim");
 // ---- simple status rules (flip these if a card shows backwards) ----
 const WET_WHEN = "LOW";     // rain module DO level that means "raining"
-const GAS_WHEN = "LOW";     // gas module DO level that means "gas detected"
+const GAS_ALERT_PCT = 50, GAS_CLEAR_PCT = 45;   // gas level % for "Gas detected" / back to "Safe" (same as the Pi)
+let gasAlert = false;
 const DRY_WHEN = "HIGH";    // soil module DO level that means "dry"
 const TEMP_HIGH_C = 38;     // temperature at or above this shows a warning
 
@@ -1901,8 +1917,8 @@ function drawTrend(key, hist, knobId) {
   const n = hist.length;
   const k = $(knobId);
   if (!n) { k.style.display = "none"; return; }
-  const step = 96 / (SOIL_LEN - 1);
-  const pts = hist.map((v, i) => [98 - (n - 1 - i) * step, 36 - Math.max(0, Math.min(1, v / 1023)) * 30]);
+  const step = 90 / (SOIL_LEN - 1);
+  const pts = hist.map((v, i) => [94 - (n - 1 - i) * step, 34 - Math.max(0, Math.min(1, v / 1023)) * 28]);
   const line = pts.map(p => p[0].toFixed(2) + "," + p[1].toFixed(2)).join(" ");
   const area = pts[0][0].toFixed(2) + ",40 " + line + " " + pts[n - 1][0].toFixed(2) + ",40";
   $("ln-" + key).setAttribute("points", line);
@@ -1942,8 +1958,9 @@ function sample() {
 // ---- air quality bar ----
 function setGas(raw) {
   const p = Math.max(0, Math.min(100, raw / 1023 * 100));
-  $("f-Gas").style.width = p.toFixed(1) + "%";
-  $("k-Gas").style.left = p.toFixed(1) + "%";
+  const pos = "calc(12px + (100% - 24px) * " + (p / 100).toFixed(4) + ")";   // stays inside the rounded bar
+  $("f-Gas").style.width = pos;
+  $("k-Gas").style.left = pos;
   $("pct-Gas").textContent = "Level " + Math.round(p) + "%";
 }
 
@@ -2226,7 +2243,10 @@ function render(data) {
     latest.Gas = s.raw;
     if (gasHist.length) { gasHist[gasHist.length - 1] = s.raw; drawGasTrend(); }
     $("l-Gas").textContent = s.volt.toFixed(2) + " V · D8 " + s.digital;
-    tagState.Gas = s.digital === GAS_WHEN ? ["Gas detected", "warn"] : ["Safe", "ok"];
+    const gp = s.raw / 1023 * 100;
+    if (gp >= GAS_ALERT_PCT) gasAlert = true; else if (gp < GAS_CLEAR_PCT) gasAlert = false;
+    tagState.Gas = gasAlert ? ["Gas detected", "warn"] : ["Safe", "ok"];
+    $("c-Gas").classList.toggle("warn", gasAlert);
   }
   if (sn.Soil) {
     const s = sn.Soil;
