@@ -1777,11 +1777,19 @@ let motorSeenAt = 0, motorState = "stop", motorLeft = 0, motorAt = 0, msgTimer =
 let trSeenAt = 0, trMsgTimer = 0;
 let alarmActive = false, alarmAt = 0;
 let mxSeenAt = 0, mxScreen = null, mxScreenLast = "";
-let audioCtx = null, soundOn = true, unlocked = false, unlockedAt = 0, sirenTimer = 0, useBeep = false;
+let audioCtx = null, soundOn = true, unlocked = false, unlockedAt = 0, sirenTimer = 0, mp3Trying = false;
 const alarmAudio = new Audio("/alarm.mp3");
 alarmAudio.loop = true;
 alarmAudio.preload = "auto";
-alarmAudio.addEventListener("error", () => { useBeep = true; });   // no alarm.mp3 on the Pi: use beeps
+// every alarm plays alarm.mp3. If it is ever blocked or fails to load, it is retried every second
+// (beeps only fill the gap until the mp3 plays again; nothing switches to beeps for good)
+alarmAudio.addEventListener("playing", () => stopBeeps());
+alarmAudio.addEventListener("error", () => {           // failed to load: stop, beep for now, retry next second
+  mp3Trying = false;
+  alarmAudio.pause();
+  if (soundOn && unlocked && (alarmActive || quakeActive)) startBeeps();
+});
+let mp3LastT = -1, mp3StuckSince = 0;
 const tr = {mode: "manual", red: false, yellow: false, green: false, cm: null};
 
 function el(tag, cls, text) {
@@ -2063,20 +2071,34 @@ function soundLabel() {
   b.textContent = !unlocked ? "🔔 Tap to enable sound" : soundOn ? "🔔 Sound on" : "🔕 Sound off";
   b.classList.toggle("on", unlocked && soundOn);
 }
+function startBeeps() { if (!sirenTimer) { beep(); sirenTimer = setInterval(beep, 500); } }
+function stopBeeps() { if (sirenTimer) { clearInterval(sirenTimer); sirenTimer = 0; } }
+function playMp3() {
+  if (mp3Trying || !alarmAudio.paused) return;
+  mp3Trying = true;
+  if (alarmAudio.error) alarmAudio.load();          // failed to load before: fetch alarm.mp3 again
+  alarmAudio.muted = false;
+  alarmAudio.play()
+    .then(() => { mp3Trying = false; stopBeeps(); })
+    .catch(() => { mp3Trying = false; startBeeps(); });   // blocked for now: beep, retry next second
+}
 function updateSiren() {
   const want = soundOn && (alarmActive || quakeActive) && unlocked;
   if (want) {
-    if (useBeep) {
-      if (!sirenTimer) { beep(); sirenTimer = setInterval(beep, 500); }
-    } else if (alarmAudio.paused) {
-      alarmAudio.muted = false;
-      alarmAudio.play().catch(() => { useBeep = true; updateSiren(); });
+    if (!alarmAudio.paused) {                         // "playing" but not moving for 2 s = stuck: restart it
+      const t = alarmAudio.currentTime;
+      if (t !== mp3LastT) { mp3LastT = t; mp3StuckSince = Date.now(); stopBeeps(); }
+      else if (Date.now() - mp3StuckSince > 2000) { alarmAudio.pause(); alarmAudio.load(); startBeeps(); }
     }
+    if (alarmAudio.paused) playMp3();
   } else {
-    if (!alarmAudio.paused) { alarmAudio.pause(); alarmAudio.currentTime = 0; }
-    if (sirenTimer) { clearInterval(sirenTimer); sirenTimer = 0; }
+    if (!alarmAudio.paused) alarmAudio.pause();
+    alarmAudio.currentTime = 0;                       // next alarm starts the mp3 from the beginning
+    stopBeeps();
   }
 }
+// any tap during an alarm retries the mp3 straight away
+document.addEventListener("pointerdown", () => { if (alarmActive || quakeActive) updateSiren(); }, {passive: true});
 $("soundBtn").addEventListener("click", () => {
   if (Date.now() - unlockedAt > 600) soundOn = !soundOn;   // the tap that unlocks sound doesn't mute it
   soundLabel();
