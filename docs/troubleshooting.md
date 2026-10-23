@@ -16,9 +16,7 @@ The Pi has never heard from it.
 
 | Message | Fix |
 |---|---|
-| `Failed to connect ... Timed out waiting for packet header` (ESP32) | Hold **BOOT** until the upload starts |
-| `Failed to communicate with the flash chip` (ESP32) | Usually a faulty board: try another ESP32 |
-| `D1 was not declared` (ESP32) | Use the GPIO numbers the sketch already uses, and the board **ESP32 Dev Module** |
+| `Failed to connect to ESP8266: Timed out` | Use a data USB cable, close the Serial Monitor, pick the right port and try again |
 | Sketch path errors (`Invalid argument`) | Move the project out of OneDrive to a plain folder such as `D:\Smartcity` |
 
 ## Traffic light: one colour always on

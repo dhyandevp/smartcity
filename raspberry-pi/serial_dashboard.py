@@ -63,9 +63,7 @@ WEATHER_URL = ("https://api.open-meteo.com/v1/forecast?latitude={lat}&longitude=
 weather = {"tempC": None, "fetched": None}
 
 
-# ---- Motor NodeMCU (2 motors + L293D): it broadcasts its state, we send it commands ----
-MOTOR_PORT = 8767   # the motor NodeMCU listens for commands here
-motor = {"seen": None, "ip": None, "state": "stop", "left": 0}
+# ---- commands to the nodes (traffic, display, seismic answers) ----
 cmd_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
 
 
@@ -151,11 +149,6 @@ def snapshot():
             snap["traffic"] = {"mode": traffic["mode"], "red": traffic["red"],
                                "yellow": traffic["yellow"], "green": traffic["green"],
                                "cm": traffic["cm"], "ageSec": round(now - traffic["seen"], 1)}
-        if motor["seen"] is None:
-            snap["motor"] = None
-        else:
-            snap["motor"] = {"state": motor["state"], "left": motor["left"],
-                             "ageSec": round(now - motor["seen"], 1)}
         return json.dumps(snap)
 
 RE_ANALOG_DIGITAL = re.compile(
@@ -191,42 +184,6 @@ def apply_mountain(data):
                 mountain["last"][k] = now
     broadcast()
     return True
-
-
-def apply_motor(data, addr):
-    """Status heartbeat from the motor NodeMCU: remember its state and its IP."""
-    st = data.get("motor")
-    left = data.get("left", 0)
-    if st not in ("up", "down", "stop"):
-        return False
-    if isinstance(left, bool) or not isinstance(left, (int, float)) or not 0 <= left <= 3600:
-        return False
-    with state_lock:
-        motor["seen"] = time.time()
-        motor["ip"] = addr[0]          # learned from the packet, so the IP can be anything
-        motor["state"] = st
-        motor["left"] = int(left)
-    broadcast()
-    return True
-
-
-def send_motor(cmd):
-    """Send up / down / stop to the motor NodeMCU. Returns (ok, error text)."""
-    with state_lock:
-        ip, seen = motor["ip"], motor["seen"]
-    if ip is None:
-        return False, "Motor node not found yet"
-    if cmd != "stop" and time.time() - seen > 6:
-        return False, "Motor node offline"
-    body = json.dumps({"cmd": cmd}).encode("utf-8")
-    for i in range(3):                  # UDP can drop a packet, so send it 3 times
-        try:
-            cmd_sock.sendto(body, (ip, MOTOR_PORT))
-        except OSError as e:
-            return False, "Send failed: " + str(e)
-        if i < 2:
-            time.sleep(0.06)
-    return True, ""
 
 
 def alarm_tick():
@@ -447,9 +404,7 @@ def udp_listener():
         try:
             packet, addr = sock.recvfrom(512)
             msg = json.loads(packet.decode("utf-8"))
-            if isinstance(msg, dict) and "motor" in msg:
-                apply_motor(msg, addr)
-            elif isinstance(msg, dict) and "traffic" in msg:
+            if isinstance(msg, dict) and "traffic" in msg:
                 apply_traffic(msg, addr)
             elif isinstance(msg, dict) and "seismic" in msg:
                 apply_seismic(msg, addr)
@@ -556,11 +511,6 @@ def make_sample_history(now=None):
         t = last_time(hh, mm)
         if t:
             ev.append((t, "light", txt, lvl))
-    # motor runs
-    for hh, mm, d in ((9, 12, "up"), (9, 14, "down"), (13, 41, "up"), (16, 5, "down")):
-        t = last_time(hh, mm)
-        if t:
-            ev.append((t, "motor", "Motor " + d + " · ran 10 s, auto-stopped", "neutral"))
     # one disaster alarm at night
     t = last_time(2, rnd.randint(5, 50))
     if t:
@@ -624,7 +574,6 @@ def history_tick(prev, dt):
             "trafficMode": traffic["mode"] if traffic["seen"] else None,
             "alarm": alarm["active"],
             "quake": quake["active"],
-            "motor": motor["state"] if motor["seen"] and now - motor["seen"] < 6 else None,
         }
     with history_lock:
         b = hist_bucket(hour_start(now))
@@ -673,8 +622,6 @@ def history_tick(prev, dt):
     if prev.get("quake") is not None and prev["quake"] != cur["quake"]:
         hist_event("quake", "Earthquake detected · ground movement + shaking" if cur["quake"]
                    else "Earthquake alert ended", "warn" if cur["quake"] else "ok")
-    if changed("motor") and cur["motor"] in ("up", "down"):
-        hist_event("motor", "Motor " + cur["motor"] + " started")
     if changed("trafficMode"):
         hist_event("traffic", "Traffic signal set to " + cur["trafficMode"])
     return cur
@@ -863,7 +810,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
 
   /* ---------- icons ---------- */
   .icon { width: 56px; height: 56px; border-radius: 50%; display: grid; place-items: center; flex: none; }
-  .icon svg, .arr svg, .ricon svg, .rbtn svg { fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+  .icon svg, .arr svg, .ricon svg { fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
   .icon svg { width: 24px; height: 24px; }
   .icon.dark { background: var(--ink); color: #fff; }
   .icon.mint { background: var(--mint); color: var(--ink); }
@@ -1027,20 +974,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
   .chart polyline { fill: none; stroke: var(--ink); stroke-width: 1.8; stroke-linejoin: round; stroke-linecap: round; vector-effect: non-scaling-stroke; }
   .cknob { position: absolute; width: 18px; height: 18px; border-radius: 50%; background: var(--mint); border: 1.6px solid var(--ink); transform: translate(-50%, -50%); display: none; }
 
-  /* ---------- motor control ---------- */
-  .mbody { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 20px; margin-top: 26px; }
-  .mstate { font-size: 40px; font-weight: 500; letter-spacing: -.02em; line-height: 1.1; }
-  .msub { margin-top: 8px; font-size: 13.5px; color: var(--dim); }
-  .mbtns { display: flex; align-items: center; gap: 12px; }
-  .rbtn {
-    appearance: none; -webkit-appearance: none; cursor: pointer;
-    width: 72px; height: 72px; border-radius: 50%; border: 1.6px solid var(--ink);
-    background: transparent; color: var(--ink); display: grid; place-items: center;
-    transition: background .2s, transform .05s;
-  }
-  .rbtn svg { width: 26px; height: 26px; stroke-width: 2; }
-  .rbtn:hover:not(:disabled) { background: #fff; }
-  .rbtn.act { background: var(--mint); }
+  /* ---------- buttons ---------- */
   .sbtn {
     appearance: none; -webkit-appearance: none; cursor: pointer;
     height: 72px; padding: 0 30px; border-radius: 999px; border: 0;
@@ -1048,8 +982,8 @@ DASHBOARD_HTML = """<!DOCTYPE html>
     display: flex; align-items: center; justify-content: center; gap: 10px; transition: transform .05s;
   }
   .sbtn::before { content: ""; width: 12px; height: 12px; border-radius: 3px; background: var(--peach); }
-  .rbtn:disabled, .sbtn:disabled { opacity: .3; cursor: not-allowed; }
-  .rbtn:active:not(:disabled), .sbtn:active:not(:disabled) { transform: scale(.96); }
+  .sbtn:disabled { opacity: .3; cursor: not-allowed; }
+  .sbtn:active:not(:disabled) { transform: scale(.96); }
   .mmsg { min-height: 18px; margin-top: 12px; font-size: 13px; color: #c2410c; }
 
   /* ---------- traffic signal ---------- */
@@ -1308,7 +1242,6 @@ DASHBOARD_HTML = """<!DOCTYPE html>
     .bars { height: 160px; gap: 7px; max-width: none; }
     .icon { width: 48px; height: 48px; }
     .tile { min-height: 240px; }
-    .mbtns { width: 100%; }
     .sbtn { flex: 1; }
     .gval { font-size: 40px; }
     .tlight { width: 100%; flex-direction: row; padding: 14px; }
@@ -1377,9 +1310,6 @@ DASHBOARD_HTML = """<!DOCTYPE html>
     .hlbl { margin-bottom: 30px; font-size: 13px; }
     .chart { min-height: 70px; }
     .tile .gchart { min-height: 50px; }
-    .mbody { margin-top: 14px; }
-    .mstate { font-size: 28px; }
-    .rbtn { width: 54px; height: 54px; }
     .sbtn { height: 54px; padding: 0 22px; }
     footer { margin-top: 14px; }
   }
@@ -1409,7 +1339,6 @@ DASHBOARD_HTML = """<!DOCTYPE html>
     <div class="chips nodes" aria-label="Node status">
       <span class="chip"><i class="pulse" id="pCtl"></i>Controller <b id="tCtl">Connecting</b></span>
       <span class="chip"><i class="pulse" id="pMtn"></i>Mountain <b id="tMtn">Waiting</b></span>
-      <span class="chip"><i class="pulse" id="pMot"></i>Motor <b id="tMot">Waiting</b></span>
       <span class="chip"><i class="pulse" id="pTr"></i>Traffic <b id="tTr">Waiting</b></span>
       <span class="chip"><i class="pulse" id="pSe"></i>Seismic <b id="tSe">Waiting</b></span>
       <span class="chip"><i class="pulse" id="pMx"></i>Display <b id="tMx">Waiting</b></span>
@@ -1441,7 +1370,6 @@ DASHBOARD_HTML = """<!DOCTYPE html>
             <li><i class="tdot" id="zd-seismic"></i><b>Seismic</b><span id="zt-seismic">No data</span><small>Shaking · Ground movement</small></li>
             <li><i class="tdot" id="zd-lighting"></i><b>Street lighting</b><span id="zt-lighting">No data</span><small>Ambient light</small></li>
             <li><i class="tdot" id="zd-traffic"></i><b>Traffic signal</b><span id="zt-traffic">No data</span><small>Red · Yellow · Green · Ultrasonic</small></li>
-            <li><i class="tdot" id="zd-motor"></i><b>Motor control</b><span id="zt-motor">No data</span><small>Both motors</small></li>
             <li><i class="tdot" id="zd-display"></i><b>Status display</b><span id="zt-display">No data</span><small>OLED screen</small></li>
           </ul>
         </div>
@@ -1676,32 +1604,6 @@ DASHBOARD_HTML = """<!DOCTYPE html>
           </div>
         </section>
 
-        <!-- Motor control -->
-        <section class="card soft">
-          <div class="head">
-            <div class="hl">
-              <span class="icon dark"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3M4.9 4.9L7 7M17 17l2.1 2.1M4.9 19.1L7 17M17 7l2.1-2.1"/></svg></span>
-              <div>
-                <h2>Motor Control</h2>
-                <div class="sub">Both motors · L293D</div>
-              </div>
-            </div>
-            <span class="tag" id="motPill">No data</span>
-          </div>
-          <div class="mbody">
-            <div>
-              <div class="mstate" id="mState">--</div>
-              <div class="msub" id="mSub">Waiting for the motor node</div>
-            </div>
-            <div class="mbtns">
-              <button class="rbtn" id="mb-up" type="button" aria-label="Up"><svg viewBox="0 0 24 24"><path d="M12 19V5M5 12l7-7 7 7"/></svg></button>
-              <button class="sbtn" id="mb-stop" type="button">Stop</button>
-              <button class="rbtn" id="mb-down" type="button" aria-label="Down"><svg viewBox="0 0 24 24"><path d="M12 5v14M19 12l-7 7-7-7"/></svg></button>
-            </div>
-          </div>
-          <div class="mmsg" id="mMsg"></div>
-        </section>
-
         <!-- Seismic monitor -->
         <section class="card white" id="c-seis">
           <div class="head">
@@ -1789,7 +1691,6 @@ const rainHist = [], soilHist = [], gasHist = [];
 let lastRainSample = 0, lastSoilSample = 0;
 let lastRecv = 0, nanoConnected = false, linkLost = false, mSeenAt = 0;
 let wxAt = 0, wxTemp = 0, wxPlace = "";
-let motorSeenAt = 0, motorState = "stop", motorLeft = 0, motorAt = 0, msgTimer = 0;
 let trSeenAt = 0, trMsgTimer = 0;
 let alarmActive = false, alarmAt = 0;
 let mxSeenAt = 0, mxScreen = null, mxScreenLast = "";
@@ -1833,7 +1734,6 @@ function $(id) { return document.getElementById(id); }
     segs.appendChild(s);
   }
 })();
-["up", "stop", "down"].forEach(c => $("mb-" + c).addEventListener("click", () => sendMotor(c)));
 ["red", "yellow", "green"].forEach(c => $("lamp-" + c).addEventListener("click", () => sendTraffic({light: c, on: !tr[c]})));
 ["manual", "auto"].forEach(m => $("mode-" + m).addEventListener("click", () => sendTraffic({mode: m})));
 
@@ -1877,7 +1777,6 @@ function nanoFresh() { return nanoConnected && lastRecv > 0 && (Date.now() - las
 function mtnFresh() { return mSeenAt > 0 && (Date.now() - mSeenAt) < 6000; }
 function wxFresh() { return wxAt > 0 && (Date.now() - wxAt) < 20 * 60 * 1000; }
 function trFresh() { return trSeenAt > 0 && (Date.now() - trSeenAt) < 3000; }
-function motFresh() { return motorSeenAt > 0 && (Date.now() - motorSeenAt) < 3000; }
 function freshFor(k) { return k === "Temp" ? wxFresh() : CARDS[k].mtn ? mtnFresh() : nanoFresh(); }
 
 // ---- temperature gauge (0-50 C) ----
@@ -1962,39 +1861,6 @@ function setGas(raw) {
   $("f-Gas").style.width = pos;
   $("k-Gas").style.left = pos;
   $("pct-Gas").textContent = "Level " + Math.round(p) + "%";
-}
-
-// ---- motor control ----
-function showMsg(text) {
-  $("mMsg").textContent = text;
-  clearTimeout(msgTimer);
-  msgTimer = setTimeout(() => { $("mMsg").textContent = ""; }, 3500);
-}
-function sendMotor(cmd) {
-  fetch("/motor", {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify({cmd: cmd})})
-    .then(r => r.json())
-    .then(j => { if (!j.ok) showMsg(j.error || "Command failed"); })
-    .catch(() => showMsg("Could not reach the dashboard"));
-}
-function paintMotor() {
-  const fresh = motFresh();
-  const st = motorState;
-  const left = Math.max(0, Math.round(motorLeft - (Date.now() - motorAt) / 1000));
-  $("mState").textContent = !fresh ? "--" : st === "up" ? "Moving up" : st === "down" ? "Moving down" : "Stopped";
-  $("mSub").textContent = !fresh ? (motorSeenAt ? "Motor node offline" : "Waiting for the motor node")
-                        : st === "stop" ? "Both motors off" : "Auto-stop in " + left + "s";
-  ["up", "down", "stop"].forEach(c => {
-    const b = $("mb-" + c);
-    b.disabled = c !== "stop" && !fresh;      // Stop is always available
-    b.classList.toggle("act", fresh && st === c);
-  });
-  const txt = !fresh ? (motorSeenAt ? "Offline" : "No data") : st === "stop" ? "Idle" : "Running";
-  const cls = !fresh ? "" : st === "stop" ? "ok" : "warn";
-  setTag("motPill", txt, cls);
-  $("zd-motor").className = "tdot" + (cls ? " " + cls : "");
-  $("zt-motor").textContent = txt;
-  $("pMot").className = "pulse " + (fresh ? "live" : (motorSeenAt ? "err" : ""));
-  $("tMot").textContent = fresh ? "Online" : motorSeenAt ? "Offline" : "Waiting";
 }
 
 // ---- traffic signal ----
@@ -2210,7 +2076,6 @@ function watchEvents() {
         ["ok", "Temperature back to normal", wxTemp.toFixed(1) + " °C in " + (wxPlace || "the city")]);
   [["ctl", "Main controller", nanoFresh(), lastRecv > 0],
    ["mtn", "Mountain node", mtnFresh(), mSeenAt > 0],
-   ["mot", "Motor node", motFresh(), motorSeenAt > 0],
    ["tr", "Traffic node", trFresh(), trSeenAt > 0],
    ["se", "Seismic node", seisFresh(), seisSeenAt > 0]].forEach(n => {
     if (!n[3]) return;                       // never seen yet: nothing to report
@@ -2294,12 +2159,6 @@ function render(data) {
     const t = data.traffic;
     trSeenAt = Date.now() - t.ageSec * 1000;
     tr.mode = t.mode; tr.red = !!t.red; tr.yellow = !!t.yellow; tr.green = !!t.green; tr.cm = t.cm;
-  }
-  if (data.motor) {
-    motorSeenAt = Date.now() - data.motor.ageSec * 1000;
-    motorState = data.motor.state;
-    motorLeft = data.motor.left;
-    motorAt = Date.now();
   }
   paint();
 }
@@ -2433,7 +2292,6 @@ function paint() {
     }
   });
 
-  paintMotor();
   paintTraffic();
   paintAlarm();
   watchEvents();
@@ -2654,8 +2512,8 @@ function aiTick() {
 
   // suggestion
   let s = "All clear · city running normally, no action needed";
-  if (quakeActive) s = "Earthquake! Take cover, stop the motor and keep everyone off the mountain road";
-  else if (alarmActive || pSlide >= 0.6) s = "Close the mountain road and stop the motor · landslide risk is high";
+  if (quakeActive) s = "Earthquake! Take cover and keep everyone off the mountain road";
+  else if (alarmActive || pSlide >= 0.6) s = "Close the mountain road · landslide risk is high";
   else if (pAir >= 0.6) s = "Ventilate the area and keep people away from the gas source";
   else if (pSlide >= 0.3) s = "Watch the mountain slope · ground is getting wet";
   else if (pRain >= 0.6) s = "Rain expected · switch street lights on early and clear the drains";
@@ -2854,26 +2712,6 @@ class Handler(BaseHTTPRequestHandler):
     def log_message(self, fmt, *args):
         pass  # keep the console quiet
 
-    def handle_motor_post(self):
-        try:
-            length = int(self.headers.get("Content-Length", 0))
-            if length <= 0 or length > 64:
-                raise ValueError("bad length")
-            cmd = json.loads(self.rfile.read(length).decode("utf-8")).get("cmd")
-            if cmd not in ("up", "down", "stop"):
-                raise ValueError("bad cmd")
-        except (ValueError, TypeError, AttributeError, UnicodeDecodeError):
-            self.send_response(400)
-            self.end_headers()
-            return
-        ok, err = send_motor(cmd)
-        body = json.dumps({"ok": ok, "error": err}).encode("utf-8")
-        self.send_response(200 if ok else 503)
-        self.send_header("Content-Type", "application/json")
-        self.send_header("Content-Length", str(len(body)))
-        self.end_headers()
-        self.wfile.write(body)
-
     def handle_traffic_post(self):
         try:
             length = int(self.headers.get("Content-Length", 0))
@@ -2917,8 +2755,6 @@ class Handler(BaseHTTPRequestHandler):
         if self.path == "/traffic":
             self.handle_traffic_post()
             return
-        if self.path == "/motor":
-            self.handle_motor_post()
             return
         if self.path != "/mountain":
             self.send_response(404)

@@ -3,7 +3,7 @@
 A working model of a smart city, built for a school science fair. A Raspberry Pi
 collects live data from wifi sensor nodes around the model and shows everything
 on one operations dashboard that opens in any browser on the same network:
-weather, air quality, soil, street lighting, a traffic signal, motors, a disaster
+weather, air quality, soil, street lighting, a traffic signal, a disaster
 alarm on the mountain, an earthquake monitor and a small status display.
 
 ![Smart City dashboard](docs/images/dashboard_hero.png)
@@ -11,12 +11,11 @@ alarm on the mountain, an earthquake monitor and a small status display.
 ## Features
 
 - **Live operations dashboard**: pastel, phone-friendly web page served by the Pi (port `8765`), updated instantly over Server-Sent Events
-- **City overview**: one glance at weather, environment, security, seismic, lighting, traffic, motors and the display
+- **City overview**: one glance at weather, environment, security, seismic, lighting, traffic and the display
 - **Environment**: rain, gas (air quality) and soil moisture from an Arduino Nano; live temperature from the internet (Open-Meteo, Koothuparamba)
 - **Mountain disaster alarm**: PIR motion + vibration on together for 0.5 s → red banner, siren sound and a flashing *DANGER* screen
 - **Earthquake monitor**: vibration + ultrasonic ground movement (4 cm or more) together for 0.5 s → *Earthquake detected* alert with a live seismograph
 - **Smart traffic signal**: manual control from the dashboard, or auto mode where an ultrasonic sensor turns the light yellow (< 20 cm) and red (< 10 cm)
-- **Motor control**: Up / Stop / Down for two motors with automatic safety stop
 - **Street lighting**: ambient light level from an LDR
 - **Status display**: 0.96" OLED that rotates weather, temperature and air quality every 5 s, with a live copy on the dashboard
 - **City AI card**: weighted risk scores (landslide, air pollution, rain, traffic) calculated from the live sensors every 2 s
@@ -31,7 +30,6 @@ flowchart LR
     NANO["Arduino Nano<br/>rain · gas · soil"] -- USB serial --> PI
     MTN["Mountain node<br/>ESP8266 · PIR · vibration · LDR"] -- wifi UDP --> PI
     TRF["Traffic node<br/>ESP8266 · lights · ultrasonic"] <-- wifi UDP --> PI
-    MOT["Motor node<br/>ESP32 · L293D · 2 motors"] <-- wifi UDP --> PI
     SEI["Seismic node<br/>ESP8266 · vibration · ultrasonic"] -- wifi UDP --> PI
     PI["Raspberry Pi 3B+<br/>serial_dashboard.py"] -- wifi UDP --> OLED["Status display<br/>ESP8266 · OLED"]
     WEB["Open-Meteo<br/>temperature"] --> PI
@@ -55,7 +53,6 @@ smartcity/
 │   ├── esp8266_mountain_node/       # NodeMCU ESP8266: PIR motion, vibration, LDR
 │   ├── esp8266_traffic_node/        # NodeMCU ESP8266: traffic light + HC-SR04
 │   ├── esp8266_oled_node/           # NodeMCU ESP8266: 0.96" OLED status display
-│   ├── esp32_motor_node/            # ESP32: 2 motors with an L293D driver
 │   └── esp8266_seismic_node/        # NodeMCU ESP8266: vibration + HC-SR04
 └── docs/                            # guides and screenshots
 ```
@@ -68,7 +65,6 @@ smartcity/
 | Mountain | NodeMCU ESP8266 | PIR motion, SW-420 vibration, LDR | wifi |
 | Traffic | NodeMCU ESP8266 | Red/yellow/green light module, HC-SR04 | wifi |
 | Status display | NodeMCU ESP8266 | 0.96" SSD1306 OLED (I2C) | wifi |
-| Motors | ESP32 DevKit | L293D driver board, 2 DC motors | wifi |
 | Seismic | NodeMCU ESP8266 | SW-420 vibration, HC-SR04 | wifi |
 | Hub | Raspberry Pi 3B+ | — | — |
 

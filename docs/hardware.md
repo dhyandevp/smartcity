@@ -10,11 +10,10 @@ hotspot). Put the wifi name and password at the top of each wifi sketch
 |---|---|
 | Arduino Nano | built in (*Arduino AVR Boards*) |
 | NodeMCU ESP8266 | *esp8266 by ESP8266 Community* (board: **NodeMCU 1.0 (ESP-12E Module)**) |
-| ESP32 (motor node) | *esp32 by Espressif Systems* (board: **ESP32 Dev Module**) |
 
 No extra libraries are needed for any sketch.
 
-> **Ground rule:** every module's GND goes to the board's GND. ESP8266 / ESP32 pins are
+> **Ground rule:** every module's GND goes to the board's GND. ESP8266 pins are
 > **3.3 V only**: never feed 5 V into an input pin.
 
 ---
@@ -83,21 +82,7 @@ I2C address `0x3C`. Library-free driver, so nothing to install. Screens rotate e
 |---|---|
 | ![DANGER screen](images/oled_danger.png) | ![EARTHQUAKE screen](images/oled_earthquake.png) |
 
-## 5. Motor node: ESP32 + L293D (`firmware/esp32_motor_node`)
-
-| L293D board | ESP32 |
-|---|---|
-| A1 / A2 (motor A) | GPIO 25 / GPIO 26 |
-| B1 / B2 (motor B) | GPIO 27 / GPIO 32 |
-| EN_A + EN_B (joined) | GPIO 33 |
-| VCC (logic) | VIN / 5V |
-| GND | GND |
-| +V / − terminals | motor battery + / − |
-
-Join all grounds (ESP32, driver, battery −). Keep GPIO 0, 2, 12, 15 free.
-Motors stop by themselves after `RUN_SECONDS` (10 s) or if wifi drops.
-
-## 6. Seismic node: NodeMCU ESP8266 (`firmware/esp8266_seismic_node`)
+## 5. Seismic node: NodeMCU ESP8266 (`firmware/esp8266_seismic_node`)
 
 ![Seismic node wiring](images/seismic_wiring.png)
 
@@ -129,7 +114,7 @@ It broadcasts until the Pi answers, then sends straight to the Pi; the Pi answer
 **`Pi NOT answering`**, check the new dashboard is running on the Pi and both are on the
 same wifi; you can also type the Pi's IP into `PI_IP_FIXED`.
 
-## 7. Raspberry Pi 3B+
+## 6. Raspberry Pi 3B+
 
 Runs `raspberry-pi/serial_dashboard.py`. Plug the Arduino Nano into any USB port.
 See [raspberry-pi-setup.md](raspberry-pi-setup.md).
