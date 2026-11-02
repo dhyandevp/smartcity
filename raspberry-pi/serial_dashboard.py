@@ -1342,6 +1342,11 @@ DASHBOARD_HTML = """<!DOCTYPE html>
   .seisLv i.on:nth-child(3) { background: var(--peach); }
   .seisLv i.on:nth-child(4) { background: #ff5a4a; color: #fff; border-color: #ff5a4a; }
   .seisGraph { display: block; width: 100%; height: 96px; margin-top: 20px; background: var(--soft); border-radius: 18px; }
+  /* last card in a column fills the leftover height: let the seismograph / gate lists take it, not empty space */
+  .col > #c-seis:last-child, .col > #c-gate:last-child { display: flex; flex-direction: column; }
+  .col > #c-seis:last-child .seisGraph { flex: 1 1 96px; height: auto; min-height: 96px; max-height: 260px; }
+  .col > #c-gate:last-child .gateLists { flex: 1 1 auto; align-items: stretch; }
+  .col > #c-seis:last-child > .foot, .col > #c-gate:last-child > .foot { margin-top: auto; padding-top: 18px; }
   .seisGraph .mid { stroke: rgba(28, 28, 28, .12); stroke-width: 1; }
   .seisGraph .lim { stroke: #ff5a4a; stroke-width: 1; stroke-dasharray: 3 4; opacity: .5; }
   .seisAxis { display: flex; justify-content: space-between; font-size: 11px; color: var(--dim); margin-top: 6px; padding: 0 4px; }
@@ -1776,24 +1781,6 @@ DASHBOARD_HTML = """<!DOCTYPE html>
           </div>
         </section>
 
-        <!-- Street lighting -->
-        <section class="card white" id="c-Light">
-          <div class="head">
-            <div class="hl">
-              <span class="icon mint"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg></span>
-              <div>
-                <h2>Street Lighting</h2>
-                <div class="sub">Ambient light · LDR</div>
-              </div>
-            </div>
-            <span class="tag" id="t-Light">No data</span>
-          </div>
-          <div class="lightRow">
-            <div class="big" id="v-Light">--</div>
-            <div class="segs" id="lightSegs"></div>
-          </div>
-          <div class="foot">Light level measured on the mountain node</div>
-        </section>
 
         <!-- Status display preview -->
         <section class="card white" id="c-disp">
@@ -1812,65 +1799,6 @@ DASHBOARD_HTML = """<!DOCTYPE html>
           </div></div>
           <div class="foot" id="dispFoot">Live copy of what the display in the model is showing</div>
         </section>
-      </div>
-      <div class="col">
-        <!-- Traffic signal -->
-        <section class="card soft" id="c-traffic">
-          <div class="head">
-            <div class="hl">
-              <span class="icon dark"><svg viewBox="0 0 24 24"><rect x="8" y="2.5" width="8" height="19" rx="4"/><circle cx="12" cy="7" r="1.3"/><circle cx="12" cy="12" r="1.3"/><circle cx="12" cy="17" r="1.3"/></svg></span>
-              <div>
-                <h2>Traffic Signal</h2>
-                <div class="sub">NodeMCU · HC-SR04 ultrasonic</div>
-              </div>
-            </div>
-            <span class="tag" id="trPill">No data</span>
-          </div>
-          <div class="trBody">
-            <div class="tlight">
-              <button class="lamp red" id="lamp-red" type="button" aria-label="Red light"></button>
-              <button class="lamp yellow" id="lamp-yellow" type="button" aria-label="Yellow light"></button>
-              <button class="lamp green" id="lamp-green" type="button" aria-label="Green light"></button>
-            </div>
-            <div class="trSide">
-              <div class="seg"><button id="mode-manual" type="button">Manual</button><button id="mode-auto" type="button">Auto</button></div>
-              <div class="dlbl">Distance to nearest object</div>
-              <div class="big" id="v-dist">--</div>
-              <div class="dbar"><div class="dknob" id="k-dist"></div></div>
-              <div class="dleg"><span style="left:0">0</span><span style="left:20%">10</span><span style="left:40%">20</span><span style="left:100%">50 cm</span></div>
-              <div class="msub" id="trSub">Waiting for the traffic node</div>
-              <div class="mmsg" id="trMsg"></div>
-            </div>
-          </div>
-        </section>
-
-        <!-- Seismic monitor -->
-        <section class="card white" id="c-seis">
-          <div class="head">
-            <div class="hl">
-              <span class="icon mint"><svg viewBox="0 0 24 24"><path d="M2 12h3l2-6 3 13 3-16 3 14 2-5h4"/></svg></span>
-              <div>
-                <h2>Seismic Monitor</h2>
-                <div class="sub">NodeMCU · vibration + ultrasonic</div>
-              </div>
-            </div>
-            <span class="tag" id="seisPill">No data</span>
-          </div>
-          <div class="seisTop">
-            <div><span class="big" id="seisInt">--</span><span class="seisOf">/100</span><div class="seisWord" id="seisWord">Waiting for the seismic node</div></div>
-            <div class="seisLv" id="seisLv"><i>Calm</i><i>Light</i><i>Moderate</i><i>Strong</i></div>
-          </div>
-          <svg id="seisGraph" class="seisGraph" viewBox="0 0 300 80" preserveAspectRatio="none" aria-label="Shake level over the last 60 seconds"></svg>
-          <div class="seisAxis"><span>60 s ago</span><span>30 s</span><span>now</span></div>
-          <div class="seisStats">
-            <div><span>Distance</span><b id="seisCm">--</b></div>
-            <div><span>Sea level</span><b id="seisBase">--</b></div>
-            <div><span>Shake level</span><b id="seisMove">--</b></div>
-            <div><span>Shakes</span><b id="seisPulse">--</b></div>
-          </div>
-          <div class="foot">Tsunami alert when the water is 4 cm or closer to the sensor (sea level high) <b>and</b> the shake level is 50 or more, both together for 0.5 s</div>
-        </section>
-
         <!-- Parking gate -->
         <section class="card white" id="c-gate">
           <div class="head">
@@ -1918,6 +1846,83 @@ DASHBOARD_HTML = """<!DOCTYPE html>
           </div>
           <div class="mmsg" id="gateMsg"></div>
           <div class="foot">Tap a saved card on the reader: the gate opens for 2 s, then closes by itself. Unknown cards stay shut: press <b>Allow</b> to save one</div>
+        </section>
+      </div>
+      <div class="col">
+        <!-- Traffic signal -->
+        <section class="card soft" id="c-traffic">
+          <div class="head">
+            <div class="hl">
+              <span class="icon dark"><svg viewBox="0 0 24 24"><rect x="8" y="2.5" width="8" height="19" rx="4"/><circle cx="12" cy="7" r="1.3"/><circle cx="12" cy="12" r="1.3"/><circle cx="12" cy="17" r="1.3"/></svg></span>
+              <div>
+                <h2>Traffic Signal</h2>
+                <div class="sub">NodeMCU · HC-SR04 ultrasonic</div>
+              </div>
+            </div>
+            <span class="tag" id="trPill">No data</span>
+          </div>
+          <div class="trBody">
+            <div class="tlight">
+              <button class="lamp red" id="lamp-red" type="button" aria-label="Red light"></button>
+              <button class="lamp yellow" id="lamp-yellow" type="button" aria-label="Yellow light"></button>
+              <button class="lamp green" id="lamp-green" type="button" aria-label="Green light"></button>
+            </div>
+            <div class="trSide">
+              <div class="seg"><button id="mode-manual" type="button">Manual</button><button id="mode-auto" type="button">Auto</button></div>
+              <div class="dlbl">Distance to nearest object</div>
+              <div class="big" id="v-dist">--</div>
+              <div class="dbar"><div class="dknob" id="k-dist"></div></div>
+              <div class="dleg"><span style="left:0">0</span><span style="left:20%">10</span><span style="left:40%">20</span><span style="left:100%">50 cm</span></div>
+              <div class="msub" id="trSub">Waiting for the traffic node</div>
+              <div class="mmsg" id="trMsg"></div>
+            </div>
+          </div>
+        </section>
+
+        <!-- Street lighting -->
+        <section class="card white" id="c-Light">
+          <div class="head">
+            <div class="hl">
+              <span class="icon mint"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg></span>
+              <div>
+                <h2>Street Lighting</h2>
+                <div class="sub">Ambient light · LDR</div>
+              </div>
+            </div>
+            <span class="tag" id="t-Light">No data</span>
+          </div>
+          <div class="lightRow">
+            <div class="big" id="v-Light">--</div>
+            <div class="segs" id="lightSegs"></div>
+          </div>
+          <div class="foot">Light level measured on the mountain node</div>
+        </section>
+
+        <!-- Seismic monitor -->
+        <section class="card white" id="c-seis">
+          <div class="head">
+            <div class="hl">
+              <span class="icon mint"><svg viewBox="0 0 24 24"><path d="M2 12h3l2-6 3 13 3-16 3 14 2-5h4"/></svg></span>
+              <div>
+                <h2>Seismic Monitor</h2>
+                <div class="sub">NodeMCU · vibration + ultrasonic</div>
+              </div>
+            </div>
+            <span class="tag" id="seisPill">No data</span>
+          </div>
+          <div class="seisTop">
+            <div><span class="big" id="seisInt">--</span><span class="seisOf">/100</span><div class="seisWord" id="seisWord">Waiting for the seismic node</div></div>
+            <div class="seisLv" id="seisLv"><i>Calm</i><i>Light</i><i>Moderate</i><i>Strong</i></div>
+          </div>
+          <svg id="seisGraph" class="seisGraph" viewBox="0 0 300 80" preserveAspectRatio="none" aria-label="Shake level over the last 60 seconds"></svg>
+          <div class="seisAxis"><span>60 s ago</span><span>30 s</span><span>now</span></div>
+          <div class="seisStats">
+            <div><span>Distance</span><b id="seisCm">--</b></div>
+            <div><span>Sea level</span><b id="seisBase">--</b></div>
+            <div><span>Shake level</span><b id="seisMove">--</b></div>
+            <div><span>Shakes</span><b id="seisPulse">--</b></div>
+          </div>
+          <div class="foot">Tsunami alert when the water is 4 cm or closer to the sensor (sea level high) <b>and</b> the shake level is 50 or more, both together for 0.5 s</div>
         </section>
       </div>
     </div>
