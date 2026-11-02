@@ -2,6 +2,25 @@
 
 Problems we actually hit while building the model, and what fixed them.
 
+**First, run the health check** on the Pi. It finds most of the problems below by itself
+and prints the fix:
+
+```bash
+ssh -t admin@admin.local "sudo bash check_smartcity.sh"
+```
+
+## `sudo: a terminal is required to read the password`
+
+Add `-t` to the ssh command: `ssh -t admin@admin.local "sudo ..."`.
+
+## New Raspberry Pi board does not join the hotspot
+
+Moving the SD card to another Pi 3B+: if it never shows up in the phone's connected devices,
+make it redo its first-boot setup (wifi included). On the card's boot drive, change the number
+after `i=` in `cmdline.txt` and the `instance-id:` in `meta-data` to the same new value
+(e.g. `rpi-imager-1793600000001`), then boot. Afterwards run `ssh-keygen -R admin.local` on the
+PC, because the Pi gets a new SSH key.
+
 ## A node shows "Waiting" on the dashboard
 
 The Pi has never heard from it.

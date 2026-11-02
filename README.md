@@ -48,6 +48,7 @@ smartcity/
 │   ├── serial_dashboard.py          # the whole Pi side: sensor bridge + web dashboard
 │   ├── alarm.mp3                    # alarm sound played by the dashboard
 │   ├── pi_optimize.sh               # optional Pi tune-up (auto-restart, watchdog, faster boot)
+│   ├── check_smartcity.sh           # health check: everything working, nothing duplicated
 │   └── smartcity-dashboard.service  # systemd service to start the dashboard at boot
 ├── firmware/
 │   ├── nano_sensor_node/            # Arduino Nano: rain, gas, soil (USB to the Pi)
