@@ -18,3 +18,6 @@ build/
 .DS_Store
 Thumbs.db
 desktop.ini
+
+# Parking gate cards saved from the dashboard (made on the Pi)
+raspberry-pi/gate_cards.json

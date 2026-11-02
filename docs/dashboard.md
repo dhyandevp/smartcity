@@ -17,7 +17,7 @@ The page works in portrait and landscape and updates instantly when a sensor cha
 
 | Card | Shows |
 |---|---|
-| City overview | 7 areas at a glance, plus the air quality and soil moisture tiles |
+| City overview | 8 areas at a glance, plus the air quality and soil moisture tiles |
 | City AI | 4 live risk predictions (see below) |
 | Rainfall | Rain sensor level and recent bars |
 | Temperature | Live temperature for Koothuparamba (Open-Meteo, every 5 minutes) |
@@ -25,7 +25,8 @@ The page works in portrait and landscape and updates instantly when a sensor cha
 | Street Lighting | Ambient light level from the LDR |
 | Status Display | A live copy of what the OLED in the model is showing |
 | Traffic Signal | Manual / Auto, tap a lamp to switch it, live ultrasonic distance |
-| Seismic Monitor | Live 60 s seismograph, Calm / Light / Moderate / Strong, distance and movement |
+| Seismic Monitor | Live 60 s seismograph, Calm / Light / Moderate / Strong, distance, sea level and shake level |
+| Parking Gate | NFC card reader + servo barrier: Open / Closed, last card (Allowed / Denied), opens today, saved cards and recent taps |
 | City History | 24 h charts and an event log |
 
 ## Alarms
@@ -39,7 +40,20 @@ Both show a red banner, play `alarm.mp3`, flash the matching card and switch the
 its warning screen. After **Silence** the alarm re-arms once the sensors calm down.
 
 Pop-up notifications also appear for rain starting/stopping, poor air quality, dry soil,
-high temperature and nodes going offline.
+high temperature, nodes going offline and every card tapped on the parking gate.
+
+## Parking gate
+
+![Parking gate](images/parking_gate.png)
+
+- Tap a **saved** card on the RC522 reader: the barrier opens for **2 s**, then closes by itself.
+- Tap an **unknown** card: the gate stays shut and a peach **New card at the gate** box
+  appears. Press **Allow** to save it as *Card 1*, *Card 2*… (up to 10). Unknown cards in
+  *Recent taps* have their own **Allow** button too.
+- **Remove** a saved card with two taps (*Remove* → *Sure?*).
+- Saved cards are stored on the Pi in `raspberry-pi/gate_cards.json` and copied to the node,
+  which keeps them in flash, so the gate keeps working if the Pi is switched off.
+- Every opening, unknown card, save and removal also goes into the City History event log.
 
 ## City AI
 

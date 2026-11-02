@@ -90,6 +90,185 @@ seismic = {"seen": None, "ip": None, "vib": False, "pulses": 0, "cm": None, "bas
 quake = {"active": False, "since": None, "both_since": None, "calm_since": None, "armed": True, "peak": 0}
 
 
+# ---- Parking gate: RC522 NFC reader + servo, on the seismic NodeMCU ----
+# The node opens the gate itself for a SAVED card (so it works even if the Pi is off); the Pi keeps
+# the list of saved cards (gate_cards.json next to this script) and sends it to the node with every answer.
+GATE_CARDS_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "gate_cards.json")
+GATE_MAX_CARDS = 10        # the node keeps up to 10 cards
+GATE_OPEN_SEC = 2          # (set on the node) a saved card opens the gate this long
+GATE_PENDING_SEC = 120     # an unknown card waits this long in the "Allow?" box
+RE_CARD_ID = re.compile(r"^[0-9A-F]{8,20}$")
+gate = {"seen": None, "ip": None, "open": False, "nfc": False, "node_cards": 0,
+        "last": None, "log": [], "seq": None, "opens": 0, "opens_day": None}
+gate_cards = []            # [{"uid": "04A1B2C3", "name": "Card 1", "added": epoch}]
+
+
+def load_gate_cards():
+    global gate_cards
+    try:
+        with open(GATE_CARDS_FILE, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        gate_cards = [c for c in data if isinstance(c, dict) and RE_CARD_ID.match(str(c.get("uid", "")))][:GATE_MAX_CARDS]
+        print(f"Parking gate: {len(gate_cards)} saved card(s)")
+    except FileNotFoundError:
+        gate_cards = []
+    except (OSError, ValueError) as e:
+        print(f"Could not read {GATE_CARDS_FILE}: {e}")
+        gate_cards = []
+
+
+def save_gate_cards():
+    tmp = GATE_CARDS_FILE + ".tmp"
+    try:
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(gate_cards, f, indent=1)
+        os.replace(tmp, GATE_CARDS_FILE)
+        return True
+    except OSError as e:
+        print(f"Could not save {GATE_CARDS_FILE}: {e}")
+        return False
+
+
+def card_name(uid):
+    for c in gate_cards:
+        if c["uid"] == uid:
+            return c.get("name") or uid
+    return None
+
+
+def gate_ack():
+    """Answer to the seismic node: "I hear you" + the saved cards."""
+    return json.dumps({"ack": "seismic", "cards": ",".join(c["uid"] for c in gate_cards)},
+                      separators=(",", ":")).encode("utf-8")
+
+
+def gate_push():
+    """Send the saved cards to the node right away (after Allow / Remove)."""
+    ip = gate["ip"] or seismic["ip"]
+    if not ip:
+        return
+    try:
+        for _ in range(2):
+            cmd_sock.sendto(gate_ack(), (ip, SEISMIC_ACK_PORT))
+    except OSError:
+        pass
+
+
+def fmt_card(uid):
+    return ":".join(uid[i:i + 2] for i in range(0, len(uid), 2))
+
+
+def apply_gate_scan(data, addr):
+    """A card touched the reader: {"gate":"scan","uid":"04A1B2C3","ok":1,"n":7} (sent twice, copy ignored)."""
+    uid = str(data.get("uid", "")).upper()
+    ok = data.get("ok")
+    n = data.get("n")
+    if not RE_CARD_ID.match(uid) or ok not in (0, 1, True, False) or isinstance(n, bool) or not isinstance(n, int):
+        return False
+    now = time.time()
+    with state_lock:
+        key = (addr[0], n)
+        if gate["seq"] and gate["seq"][0] == key and now - gate["seq"][1] < 3:
+            return True                             # the second copy
+        gate["seq"] = (key, now)
+        gate["ip"] = addr[0]
+        name = card_name(uid)
+        entry = {"uid": uid, "name": name, "ok": bool(ok), "t": now}
+        gate["last"] = entry
+        gate["log"].insert(0, entry)
+        del gate["log"][12:]
+        day = city_time(now)[:3]
+        if gate["opens_day"] != day:
+            gate.update(opens=0, opens_day=day)
+        if ok:
+            gate["opens"] += 1
+        out_of_sync = not ok and name is not None   # saved here but the node doesn't know yet
+    if ok:
+        print(f"Parking gate opened by {name or uid}")
+        hist_event("gate", "Parking gate opened · " + (name or fmt_card(uid)), "ok")
+    elif out_of_sync:
+        gate_push()
+    else:
+        print(f"Parking gate: unknown card {uid} denied")
+        hist_event("gate", "Unknown card at the parking gate · " + fmt_card(uid), "warn")
+    broadcast()
+    return True
+
+
+def gate_allow(uid):
+    uid = str(uid or "").upper()
+    if not RE_CARD_ID.match(uid):
+        return False, "Bad card ID"
+    with state_lock:
+        if card_name(uid) is None:
+            if len(gate_cards) >= GATE_MAX_CARDS:
+                return False, "The gate holds %d cards · remove one first" % GATE_MAX_CARDS
+            used = {c.get("name") for c in gate_cards}
+            k = 1
+            while "Card %d" % k in used:
+                k += 1
+            name = "Card %d" % k
+            gate_cards.append({"uid": uid, "name": name, "added": round(time.time())})
+            if not save_gate_cards():
+                gate_cards.pop()
+                return False, "Could not save the card on the Pi"
+            for e in gate["log"]:
+                if e["uid"] == uid:
+                    e["name"] = name
+        else:
+            name = card_name(uid)
+    gate_push()
+    hist_event("gate", "Card saved for the parking gate · " + name, "info")
+    broadcast()
+    return True, None
+
+
+def gate_remove(uid):
+    uid = str(uid or "").upper()
+    with state_lock:
+        keep = [c for c in gate_cards if c["uid"] != uid]
+        if len(keep) == len(gate_cards):
+            return False, "That card is not saved"
+        name = card_name(uid)
+        old = list(gate_cards)
+        gate_cards[:] = keep
+        if not save_gate_cards():
+            gate_cards[:] = old
+            return False, "Could not save on the Pi"
+        for e in gate["log"]:
+            if e["uid"] == uid:
+                e["name"] = None
+    gate_push()
+    hist_event("gate", "Card removed from the parking gate · " + name, "neutral")
+    broadcast()
+    return True, None
+
+
+def gate_snapshot(now):
+    """Call with state_lock held."""
+    saved = {c["uid"] for c in gate_cards}
+    last = gate["last"]
+    pend = None
+    for e in gate["log"]:                          # newest unknown card, if it's recent and still not saved
+        if not e["ok"] and e["uid"] not in saved:
+            if now - e["t"] <= GATE_PENDING_SEC:
+                pend = {"uid": e["uid"], "agoSec": round(now - e["t"], 1)}
+            break
+    day = city_time(now)[:3]
+    return {
+        "ageSec": None if gate["seen"] is None else round(now - gate["seen"], 1),
+        "open": gate["open"], "nfc": gate["nfc"], "nodeCards": gate["node_cards"],
+        "openSec": GATE_OPEN_SEC, "max": GATE_MAX_CARDS,
+        "cards": [{"uid": c["uid"], "name": c.get("name") or c["uid"]} for c in gate_cards],
+        "last": None if last is None else {"uid": last["uid"], "name": card_name(last["uid"]), "ok": last["ok"],
+                                           "agoSec": round(now - last["t"], 1)},
+        "pending": pend,
+        "log": [{"uid": e["uid"], "name": card_name(e["uid"]), "ok": e["ok"], "agoSec": round(now - e["t"], 1)}
+                for e in gate["log"][:6]],
+        "opens": gate["opens"] if gate["opens_day"] == day else 0,
+    }
+
+
 # ---- Status display NodeMCU (OLED, was the 8x8 matrix): says hello, we send it the city status every second ----
 MATRIX_PORT = 8769
 MATRIX_RAIN_WHEN = "LOW"   # rain module DO level that means "raining" (same as WET_WHEN on the page)
@@ -141,6 +320,7 @@ def snapshot():
         else:
             snap["seismic"] = {k: seismic[k] for k in ("vib", "pulses", "cm", "base", "move", "intensity")}
             snap["seismic"]["ageSec"] = round(now - seismic["seen"], 1)
+        snap["gate"] = gate_snapshot(now)
         snap["quake"] = {"active": quake["active"], "peak": quake["peak"],
                          "agoSec": round(now - quake["since"], 1) if quake["since"] else 0}
         if traffic["seen"] is None:
@@ -243,6 +423,11 @@ def apply_seismic(data, addr):
     with state_lock:
         dt = now - seismic["seen"] if seismic["seen"] else 0.2
         cm = None if nums["cm"] < 0 else round(float(nums["cm"]), 1)
+        g = data.get("gate")
+        if g in (0, 1) and not isinstance(g, bool):          # parking gate status rides along
+            nc = data.get("cards", 0)
+            gate.update(seen=now, ip=addr[0], open=bool(g), nfc=data.get("nfc") == 1,
+                        node_cards=nc if isinstance(nc, int) and not isinstance(nc, bool) else 0)
         seismic.update(seen=now, ip=addr[0], vib=bool(vib), pulses=pulses, cm=cm,
                        base=None if nums["base"] < 0 else round(float(nums["base"]), 1),
                        move=move, intensity=seismic_intensity(pulses, vib, dt))
@@ -259,9 +444,9 @@ def apply_seismic(data, addr):
         ack = now - seismic["ack_at"] >= 2
         if ack:
             seismic["ack_at"] = now
-    if ack:                                        # "I hear you" (at most every 2 s)
+    if ack:                                        # "I hear you" + the saved gate cards (at most every 2 s)
         try:
-            cmd_sock.sendto(b'{"ack":"seismic"}', (addr[0], SEISMIC_ACK_PORT))
+            cmd_sock.sendto(gate_ack(), (addr[0], SEISMIC_ACK_PORT))
         except OSError:
             pass
     broadcast()
@@ -409,6 +594,8 @@ def udp_listener():
             msg = json.loads(packet.decode("utf-8"))
             if isinstance(msg, dict) and "traffic" in msg:
                 apply_traffic(msg, addr)
+            elif isinstance(msg, dict) and msg.get("gate") == "scan":
+                apply_gate_scan(msg, addr)
             elif isinstance(msg, dict) and "seismic" in msg:
                 apply_seismic(msg, addr)
             elif isinstance(msg, dict) and msg.get("matrix") == "ok":
@@ -1164,6 +1351,55 @@ DASHBOARD_HTML = """<!DOCTYPE html>
   .seisStats b { display: block; font-size: 15px; font-weight: 600; font-variant-numeric: tabular-nums; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   @media (max-width: 560px) { .seisStats { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
 
+  /* ---------- parking gate ---------- */
+  .gateTop { display: flex; align-items: flex-end; gap: 22px; margin-top: 16px; flex-wrap: wrap; }
+  .gateSvg { width: 124px; height: 110px; flex: none; overflow: visible; }
+  .gateSvg .ground { stroke: #c6ccc5; stroke-width: 2; stroke-linecap: round; }
+  .gateSvg .post { fill: var(--ink); }
+  .gateSvg .rest { fill: #c6ccc5; }
+  .gateSvg .arm { fill: #fff; stroke: var(--ink); stroke-width: 1.4; }
+  .gateSvg .stripe { fill: #ff6b5b; }
+  .gateSvg .pivot { fill: #fff; stroke: var(--ink); stroke-width: 1.4; }
+  #gateArm { transform-box: view-box; transform-origin: 20px 88px; transition: transform .7s var(--ease); }
+  .gateSvg.open #gateArm { transform: rotate(-84deg); }
+  .gateSvg.deny #gateArm { animation: gdeny .55s ease-in-out; }
+  @keyframes gdeny { 25% { transform: rotate(-6deg); } 55% { transform: rotate(2deg); } 80% { transform: rotate(-2deg); } }
+  #gateLamp { fill: #ff5a4a; transition: fill .3s; }
+  .gateSvg.open #gateLamp { fill: #5ee37d; }
+  .gateSvg.off #gateLamp { fill: #6f746e; }
+  .gateSide { min-width: 0; flex: 1 1 170px; padding-bottom: 4px; }
+  .gateSide .big { font-size: 46px; font-weight: 600; }
+  .gateWord { font-size: 13.5px; color: var(--dim); margin-top: 8px; }
+  .gatePend { display: flex; align-items: center; gap: 12px; margin-top: 16px; padding: 12px 12px 12px 16px; border-radius: 18px;
+              background: var(--peach); animation: tin .25s ease-out; }
+  .gatePend[hidden] { display: none; }
+  .gatePend div { flex: 1; min-width: 0; }
+  .gatePend b { display: block; font-size: 14.5px; font-weight: 600; }
+  .gatePend span { display: block; font-size: 12.5px; color: #7a4a33; margin-top: 2px; overflow-wrap: anywhere; }
+  .gbtn { appearance: none; -webkit-appearance: none; border: 1px solid transparent; cursor: pointer; font-family: inherit; font-size: 13.5px;
+          font-weight: 600; padding: 10px 18px; border-radius: 999px; background: var(--ink); color: #fff; flex: none; white-space: nowrap; }
+  .gbtn.sm { padding: 6px 12px; font-size: 12px; font-weight: 500; }
+  .gbtn.ghost { background: #fff; color: var(--ink); border-color: rgba(28, 28, 28, .12); }
+  .gbtn.sure { background: #ff5a4a; color: #fff; border-color: transparent; }
+  .gbtn:disabled { opacity: .45; cursor: default; }
+  .gateStats { margin-top: 16px; }
+  .gateLists { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; margin-top: 10px; }
+  .gList { background: var(--soft); border-radius: 18px; padding: 12px 12px 6px 14px; min-width: 0; }
+  .gHead { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; font-size: 13px; margin-bottom: 4px; }
+  .gHead b { font-weight: 600; }
+  .gHead span { color: var(--dim); font-size: 12px; font-variant-numeric: tabular-nums; }
+  .gList ul { list-style: none; margin: 0; padding: 0; }
+  .gList li { display: flex; align-items: center; gap: 8px; padding: 7px 0; border-top: 1px solid rgba(28, 28, 28, .07); font-size: 13px; min-height: 42px; }
+  .gList li:first-child { border-top: 0; }
+  .gList .gi { flex: 1; min-width: 0; }
+  .gList .gi b { display: block; font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .gList .gi > span { display: block; font-size: 11.5px; color: var(--dim); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-variant-numeric: tabular-nums; }
+  .gList .gdot { width: 8px; height: 8px; border-radius: 50%; flex: none; background: var(--mintD); }
+  .gList .gdot.no { background: var(--peachD); }
+  .gList li.gEmpty { color: var(--dim); font-size: 12.5px; }
+  @media (max-width: 560px) { .gateLists { grid-template-columns: minmax(0, 1fr); } .gateSide .big { font-size: 38px; } }
+  @media (prefers-reduced-motion: reduce) { #gateArm { transition: none; } .gateSvg.deny #gateArm, .gatePend { animation: none; } }
+
   /* ---------- popups (toasts) ---------- */
   .toasts { position: fixed; right: max(16px, env(safe-area-inset-right)); bottom: max(16px, env(safe-area-inset-bottom)); z-index: 50;
             display: flex; flex-direction: column; gap: 10px; width: min(360px, calc(100vw - 32px)); pointer-events: none; }
@@ -1373,6 +1609,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
             <li><i class="tdot" id="zd-seismic"></i><b>Seismic</b><span id="zt-seismic">No data</span><small>Shaking · Sea level</small></li>
             <li><i class="tdot" id="zd-lighting"></i><b>Street lighting</b><span id="zt-lighting">No data</span><small>Ambient light</small></li>
             <li><i class="tdot" id="zd-traffic"></i><b>Traffic signal</b><span id="zt-traffic">No data</span><small>Red · Yellow · Green · Ultrasonic</small></li>
+            <li><i class="tdot" id="zd-gate"></i><b>Parking gate</b><span id="zt-gate">No data</span><small>NFC reader · Servo</small></li>
             <li><i class="tdot" id="zd-display"></i><b>Status display</b><span id="zt-display">No data</span><small>OLED screen</small></li>
           </ul>
         </div>
@@ -1632,6 +1869,55 @@ DASHBOARD_HTML = """<!DOCTYPE html>
             <div><span>Shakes</span><b id="seisPulse">--</b></div>
           </div>
           <div class="foot">Tsunami alert when the water is 4 cm or closer to the sensor (sea level high) <b>and</b> the shake level is 50 or more, both together for 0.5 s</div>
+        </section>
+
+        <!-- Parking gate -->
+        <section class="card white" id="c-gate">
+          <div class="head">
+            <div class="hl">
+              <span class="icon dark"><svg viewBox="0 0 24 24"><path d="M5 21V9M3 21h18"/><rect x="5" y="9" width="15" height="3.5" rx="1.75"/><path d="M9.5 9l-1.5 3.5M14 9l-1.5 3.5M18.5 9 17 12.5"/></svg></span>
+              <div>
+                <h2>Parking Gate</h2>
+                <div class="sub">NFC RC522 · servo · seismic NodeMCU</div>
+              </div>
+            </div>
+            <span class="tag" id="gatePill">No data</span>
+          </div>
+          <div class="gateTop">
+            <svg class="gateSvg off" id="gateSvg" viewBox="0 0 124 110" aria-hidden="true">
+              <defs><clipPath id="gateClip"><rect x="16" y="84" width="90" height="8" rx="4"/></clipPath></defs>
+              <line class="ground" x1="2" y1="106" x2="122" y2="106"/>
+              <rect class="rest" x="100" y="92" width="5" height="14" rx="2"/>
+              <rect class="post" x="10" y="80" width="20" height="26" rx="4"/>
+              <circle id="gateLamp" cx="20" cy="99" r="3.2"/>
+              <g id="gateArm">
+                <rect class="arm" x="16" y="84" width="90" height="8" rx="4"/>
+                <g clip-path="url(#gateClip)"><rect class="stripe" x="36" y="80" width="9" height="16"/><rect class="stripe" x="56" y="80" width="9" height="16"/><rect class="stripe" x="76" y="80" width="9" height="16"/><rect class="stripe" x="96" y="80" width="12" height="16"/></g>
+                <rect x="16" y="84" width="90" height="8" rx="4" fill="none" stroke="#1c1c1c" stroke-width="1.4"/>
+              </g>
+              <circle class="pivot" cx="20" cy="88" r="4.5"/>
+            </svg>
+            <div class="gateSide">
+              <div class="big" id="gateState">--</div>
+              <div class="gateWord" id="gateWord">Waiting for the seismic node</div>
+            </div>
+          </div>
+          <div class="gatePend" id="gatePend" hidden>
+            <div><b>New card at the gate</b><span id="gatePendId"></span></div>
+            <button class="gbtn" id="gateAllow" type="button">Allow</button>
+          </div>
+          <div class="seisStats gateStats">
+            <div><span>Last card</span><b id="gateLast">--</b></div>
+            <div><span>Result</span><b id="gateRes">--</b></div>
+            <div><span>Opened today</span><b id="gateOpens">--</b></div>
+            <div><span>Card reader</span><b id="gateNfc">--</b></div>
+          </div>
+          <div class="gateLists">
+            <div class="gList"><div class="gHead"><b>Saved cards</b><span id="gateCount">0 / 10</span></div><ul id="gateCards"><li class="gEmpty">No saved cards yet</li></ul></div>
+            <div class="gList"><div class="gHead"><b>Recent taps</b><span id="gateTaps"></span></div><ul id="gateLog"><li class="gEmpty">No taps yet</li></ul></div>
+          </div>
+          <div class="mmsg" id="gateMsg"></div>
+          <div class="foot">Tap a saved card on the reader: the gate opens for 2 s, then closes by itself. Unknown cards stay shut: press <b>Allow</b> to save one</div>
         </section>
       </div>
     </div>
@@ -2153,6 +2439,7 @@ function render(data) {
     quakeAt = Date.now() - (data.quake.agoSec || 0) * 1000;
     quakePeak = data.quake.peak || 0;
   }
+  if (data.gate) gateRender(data.gate);
   if (data.matrix) { mxSeenAt = Date.now() - data.matrix.ageSec * 1000; mxScreen = data.matrix.screen || null; }
   if (data.alarm) {
     alarmActive = !!data.alarm.active;
@@ -2311,6 +2598,7 @@ function paint() {
   $("tMx").textContent = mxOn ? "Online" : mxSeenAt ? "Offline" : "Waiting";
   paintDisplay();
   paintSeismic();
+  paintGate();
   const sf = seisFresh() && seis;
   $("zd-seismic").className = "tdot" + (!sf ? "" : quakeActive || seisLevel(seis.intensity) >= 2 ? " warn" : " ok");
   $("zt-seismic").textContent = !sf ? (seisSeenAt ? "Offline" : "No data") : quakeActive ? "TSUNAMI ALERT" : SEIS_WORDS[seisLevel(seis.intensity)];
@@ -2383,6 +2671,120 @@ function paintSeismic() {
   $("seisPulse").textContent = (seis.pulses * 5) + " /s";
 }
 setInterval(seisSample, 200);
+
+// ---- parking gate: NFC reader + servo on the seismic NodeMCU ----
+let gt = null, gateSeenAt = 0, gateScanAt = 0, gateMsgTimer = 0, gateSure = "", gateSureTimer = 0, gateSig = "", gateLogSig = "";
+function gateFresh() { return gateSeenAt > 0 && (Date.now() - gateSeenAt) < 3000; }
+function cardFmt(u) { return (u.match(/.{1,2}/g) || []).join(":"); }
+function esc(t) { return String(t).replace(/[&<>"]/g, c => ({"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;"})[c]); }
+function gateMsg(text) {
+  $("gateMsg").textContent = text;
+  clearTimeout(gateMsgTimer);
+  gateMsgTimer = setTimeout(() => { $("gateMsg").textContent = ""; }, 4000);
+}
+function gatePost(path, uid) {
+  fetch(path, {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify({uid: uid})})
+    .then(r => r.json())
+    .then(j => { if (!j.ok) gateMsg(j.error || "Did not work, try again"); })
+    .catch(() => gateMsg("Could not reach the dashboard"));
+}
+function gateRender(g) {
+  const first = gt === null, now = Date.now();
+  gt = g;
+  gateSeenAt = g.ageSec === null ? 0 : now - g.ageSec * 1000;
+  if (g.last) g.last.at = now - g.last.agoSec * 1000;
+  if (g.pending) g.pending.at = now - g.pending.agoSec * 1000;
+  g.log.forEach(e => { e.at = now - e.agoSec * 1000; });
+  if (g.last && g.last.at > gateScanAt + 800) {               // a new tap
+    if (!first && now - pageStart > WARMUP_MS && g.last.agoSec < 10) {
+      if (g.last.ok) toast("ok", "Parking gate opened", (g.last.name || cardFmt(g.last.uid)) + " · closes in " + g.openSec + " s");
+      else {
+        toast("info", "Unknown card at the gate", cardFmt(g.last.uid) + " · press Allow to save it");
+        const sv = $("gateSvg");
+        sv.classList.remove("deny"); void sv.getBoundingClientRect(); sv.classList.add("deny");
+      }
+    }
+    gateScanAt = g.last.at;
+  }
+}
+function paintGate() {
+  const g = gt, fresh = gateFresh() && g, now = Date.now();
+  const open = !!(fresh && g.open), svg = $("gateSvg");
+  svg.classList.toggle("open", open);
+  svg.classList.toggle("off", !fresh);
+  $("c-gate").classList.toggle("stale", !fresh);
+  const off = gateSeenAt ? "Offline" : "No data";
+  setTag("gatePill", !fresh ? off : !g.nfc ? "Reader missing" : open ? "Open" : "Closed", !fresh ? "" : !g.nfc ? "warn" : open ? "ok" : "neutral");
+  $("gateState").textContent = !fresh ? "--" : open ? "Open" : "Closed";
+  const who = g && g.last && g.last.ok ? " " + (g.last.name || cardFmt(g.last.uid)) : "";
+  $("gateWord").textContent = !fresh ? (gateSeenAt ? "Seismic node offline · check its power and wifi" : "Waiting for the seismic node") :
+    !g.nfc ? "Card reader not found · check 3.3V, SDA → D8 and RST → D0" :
+    open ? "Welcome" + who + " · closes by itself in " + g.openSec + " s" :
+    g.nodeCards !== g.cards.length ? "Sending the saved cards to the gate…" :
+    g.cards.length ? "Tap a saved card on the reader to open" : "No saved cards yet · tap a card, then press Allow";
+  $("zd-gate").className = "tdot" + (!fresh ? "" : !g.nfc ? " warn" : " ok");
+  $("zt-gate").textContent = !fresh ? off : !g.nfc ? "Reader missing" : open ? "Open" :
+    "Closed · " + g.cards.length + (g.cards.length === 1 ? " card" : " cards");
+  if (!g) return;
+
+  // new card waiting for "Allow"
+  const p = g.pending && now - g.pending.at < 120000 && !g.cards.some(c => c.uid === g.pending.uid) ? g.pending : null;
+  $("gatePend").hidden = !p;
+  if (p) {
+    $("gatePendId").textContent = cardFmt(p.uid) + " · tapped " + fmtAgo((now - p.at) / 1000) + " · it stays shut until you allow it";
+    $("gateAllow").dataset.uid = p.uid;
+    const full = g.cards.length >= g.max;
+    $("gateAllow").disabled = full;
+    $("gateAllow").title = full ? "The gate holds " + g.max + " cards · remove one first" : "";
+  }
+
+  // stats
+  const L = g.last;
+  $("gateLast").textContent = L ? (L.name || cardFmt(L.uid)) : "--";
+  $("gateRes").textContent = L ? (L.ok ? "Allowed" : "Denied") : "--";
+  $("gateRes").style.color = L ? (L.ok ? "#239a43" : "#e0362a") : "";
+  $("gateOpens").textContent = g.opens + (g.opens === 1 ? " time" : " times");
+  $("gateNfc").textContent = !fresh ? "--" : g.nfc ? "OK" : "Missing";
+  $("gateNfc").style.color = fresh && !g.nfc ? "#e0362a" : "";
+
+  // saved cards (rebuilt only when they change, so taps on the buttons never get lost)
+  $("gateCount").textContent = g.cards.length + " / " + g.max;
+  const sig = JSON.stringify(g.cards) + gateSure;
+  if (sig !== gateSig) {
+    gateSig = sig;
+    $("gateCards").innerHTML = g.cards.length ? g.cards.map(c =>
+      '<li><div class="gi"><b>' + esc(c.name) + '</b><span>' + cardFmt(c.uid) + '</span></div>' +
+      '<button class="gbtn sm ghost' + (gateSure === c.uid ? " sure" : "") + '" type="button" data-rm="' + c.uid + '">' +
+      (gateSure === c.uid ? "Sure?" : "Remove") + '</button></li>').join("") : '<li class="gEmpty">No saved cards yet</li>';
+  }
+  // recent taps
+  const saved = new Set(g.cards.map(c => c.uid));
+  const lsig = JSON.stringify(g.log.map(e => [e.uid, e.ok, e.name, Math.round(e.at / 1000)])) + [...saved].join();
+  if (lsig !== gateLogSig) {
+    gateLogSig = lsig;
+    $("gateLog").innerHTML = g.log.length ? g.log.slice(0, 4).map(e =>
+      '<li><span class="gdot' + (e.ok ? "" : " no") + '"></span><div class="gi"><b>' + esc(e.name || cardFmt(e.uid)) + '</b>' +
+      '<span>' + (e.ok ? "Allowed" : "Denied") + ' · <span class="ago" data-at="' + e.at + '"></span></span></div>' +
+      (!e.ok && !saved.has(e.uid) ? '<button class="gbtn sm" type="button" data-allow="' + e.uid + '">Allow</button>' : "") + '</li>').join("")
+      : '<li class="gEmpty">No taps yet</li>';
+  }
+  document.querySelectorAll("#gateLog .ago").forEach(a => { a.textContent = fmtAgo((now - +a.dataset.at) / 1000); });
+  $("gateTaps").textContent = g.log.length ? "newest first" : "";
+}
+$("gateAllow").addEventListener("click", e => { if (e.currentTarget.dataset.uid) gatePost("/gate/allow", e.currentTarget.dataset.uid); });
+$("gateLog").addEventListener("click", e => {
+  const b = e.target.closest("button[data-allow]");
+  if (b) gatePost("/gate/allow", b.dataset.allow);
+});
+$("gateCards").addEventListener("click", e => {
+  const b = e.target.closest("button[data-rm]");
+  if (!b) return;
+  const uid = b.dataset.rm;
+  clearTimeout(gateSureTimer);
+  if (gateSure === uid) { gateSure = ""; gatePost("/gate/remove", uid); }
+  else { gateSure = uid; gateSureTimer = setTimeout(() => { gateSure = ""; paintGate(); }, 3000); }
+  paintGate();
+});
 
 // ---- City AI: a small weighted-risk model over the live sensors, runs every 2 s ----
 const AI_PREDS = [
@@ -2746,6 +3148,27 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
+    def handle_gate_post(self):
+        try:
+            length = int(self.headers.get("Content-Length", 0))
+            if length <= 0 or length > 128:
+                raise ValueError("bad length")
+            data = json.loads(self.rfile.read(length).decode("utf-8"))
+            if not isinstance(data, dict):
+                raise ValueError("bad body")
+        except (ValueError, TypeError, UnicodeDecodeError):
+            self.send_response(400)
+            self.end_headers()
+            return
+        fn = gate_allow if self.path == "/gate/allow" else gate_remove
+        ok, err = fn(data.get("uid"))
+        body = json.dumps({"ok": ok, "error": err}).encode("utf-8")
+        self.send_response(200 if ok else 409)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
     def do_POST(self):
         if self.path == "/alarm/silence":
             silence_alarm()
@@ -2759,6 +3182,8 @@ class Handler(BaseHTTPRequestHandler):
         if self.path == "/traffic":
             self.handle_traffic_post()
             return
+        if self.path in ("/gate/allow", "/gate/remove"):
+            self.handle_gate_post()
             return
         if self.path != "/mountain":
             self.send_response(404)
@@ -2892,6 +3317,7 @@ def main():
     threading.Thread(target=weather_loop, daemon=True).start()
     threading.Thread(target=alarm_loop, daemon=True).start()
     threading.Thread(target=matrix_loop, daemon=True).start()
+    load_gate_cards()
     make_sample_history()
     hist_event("system", "Dashboard started")
     threading.Thread(target=history_loop, daemon=True).start()

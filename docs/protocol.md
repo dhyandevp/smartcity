@@ -11,7 +11,7 @@ configured; the Pi remembers each sender's IP to send commands back.
 | `8766` | nodes → Pi | Every node's status / heartbeat |
 | `8768` | Pi → traffic node | Traffic commands |
 | `8769` | Pi → status display | City status for the OLED, once a second |
-| `8770` | Pi → seismic node | `{"ack":"seismic"}` every 2 s, so the node knows the Pi hears it |
+| `8770` | Pi → seismic node | `{"ack":"seismic","cards":"04A1B2C3,DEADBEEF"}` every 2 s (and right after Allow / Remove): the Pi hears it, plus the saved parking cards |
 | `8765` | browser → Pi (HTTP) | Dashboard page, `/stream` (Server-Sent Events), `/data`, `/history` |
 
 ## Messages from the nodes (port 8766)
@@ -21,12 +21,14 @@ The Pi looks at the keys to tell the nodes apart:
 | Node | Example | Recognised by |
 |---|---|---|
 | Traffic | `{"traffic":"auto","r":0,"y":0,"g":1,"cm":40}` (`cm` is `-1` when nothing is in range) | `traffic` |
-| Seismic | `{"seismic":1,"vib":1,"pulses":6,"cm":36.5,"base":30.0,"move":6.5}` | `seismic` |
+| Parking gate tap | `{"gate":"scan","uid":"04A1B2C3","ok":1,"n":7}` (sent twice; `ok` = the node opened the gate, `n` stops the copy counting twice) | `"gate":"scan"` |
+| Seismic | `{"seismic":1,"vib":1,"pulses":6,"cm":36.5,"base":30.0,"move":6.5,"gate":0,"nfc":1,"cards":2}` (`gate` open/closed, `nfc` reader found, number of saved cards on the node) | `seismic` |
 | Status display | `{"matrix":"ok","screen":"temp"}` | `matrix` |
 | Mountain | `{"motion":0,"vibration":1,"light":72}` | none of the above |
 
 ```python
 if "traffic" in msg:               apply_traffic(msg, addr)
+elif msg.get("gate") == "scan":    apply_gate_scan(msg, addr)
 elif "seismic" in msg:             apply_seismic(msg, addr)
 elif msg.get("matrix") == "ok":    apply_matrix(msg, addr)
 else:                              apply_mountain(msg)
@@ -52,4 +54,6 @@ The Arduino Nano is on USB serial instead, printing lines like
 | GET | `/history` | 24 h hourly values + event log |
 | GET | `/alarm.mp3` | Alarm sound |
 | POST | `/traffic` | Mode or single light |
-| POST | `/alarm/silence` | Silence the disaster and earthquake alarms |
+| POST | `/alarm/silence` | Silence the disaster and tsunami alarms |
+| POST | `/gate/allow` | `{"uid":"04A1B2C3"}`: save a card for the parking gate (up to 10) |
+| POST | `/gate/remove` | `{"uid":"04A1B2C3"}`: remove a saved card |

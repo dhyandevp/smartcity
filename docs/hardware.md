@@ -82,27 +82,50 @@ I2C address `0x3C`. Library-free driver, so nothing to install. Screens rotate e
 |---|---|
 | ![DANGER screen](images/oled_danger.png) | ![EARTHQUAKE screen](images/oled_earthquake.png) |
 
-## 5. Seismic node: NodeMCU ESP8266 (`firmware/esp8266_seismic_node`)
+## 5. Seismic node + parking gate: NodeMCU ESP8266 (`firmware/esp8266_seismic_node`)
 
-![Seismic node wiring](images/seismic_wiring.png)
+One NodeMCU runs two jobs: the **tsunami alert** (vibration + ultrasonic) and the
+**parking gate** (RC522 NFC reader + servo). Install the **MFRC522** library
+(*Sketch → Include Library → Manage Libraries*); Servo, SPI and EEPROM come with the
+ESP8266 board package.
+
+![Seismic node + parking gate wiring](images/seismic_wiring.png)
 
 | Part | Pin |
 |---|---|
-| SW-420 vibration DO | D5 |
-| HC-SR04 Trig | D6 |
-| HC-SR04 Echo | D7 |
-| VCC of both | 3V3 |
-| GND of both | G |
+| SW-420 vibration DO | D1 |
+| HC-SR04 Trig | D3 |
+| HC-SR04 Echo | D2 |
+| SW-420 + HC-SR04 VCC / GND | 3V3 / G |
+| RC522 SDA | D8 |
+| RC522 SCK | D5 |
+| RC522 MOSI | D7 |
+| RC522 MISO | D6 |
+| RC522 RST | D0 |
+| RC522 IRQ | not connected |
+| RC522 3.3V / GND | 3V3 (**not 5V**) / G |
+| Servo signal (orange) | D4 |
+| Servo + (red) / − (brown) | VIN (5V) / G |
 
-D5, D6 and D7 are safe for sensors (avoid D3, D4 and D8: they decide how the NodeMCU boots).
+The RC522 talks over SPI, which needs D5, D6 and D7, so the vibration sensor and the
+ultrasonic moved to D1, D2 and D3. If the servo makes the board reset, use a better USB
+charger or give the servo its own 5V supply (join the grounds).
+
+**Parking gate:** a **saved** card opens the gate (servo to 90°) for 2 s, then it closes by
+itself. An unknown card leaves it shut and appears on the dashboard with an **Allow**
+button. The saved cards live on the Pi (`raspberry-pi/gate_cards.json`), are sent to the
+node every 2 s and are kept in the node's flash, so saved cards still open the gate when
+the Pi is off. Angles and timing: `GATE_CLOSED_DEG`, `GATE_OPEN_DEG`, `GATE_OPEN_MS` in the
+sketch (swap the two angles if the arm moves the wrong way).
 
 Point the ultrasonic at something flat 10-100 cm away that moves when the "ground"
 shakes. The node learns the normal distance by itself. The Serial Monitor (115200)
 prints a health line every second, for example
-`ultrasonic OK: 30.0 cm (normal 30.0, 25/25 pings) | vibration 0 flips/s | calm, 1 reports/s | wifi ok | Pi heard us OK (192.168.43.120)`.
+`ultrasonic OK: 30.0 cm (normal 30.0, 25/25 pings) | vibration 0 flips/s | calm, 1 reports/s | gate closed, reader OK, 2 card(s) | wifi ok | Pi heard us OK (192.168.43.120)`,
+and a line such as `Card 04A1B2C3 -> ALLOWED, opening the gate` for every card.
 
 If it says **NO ECHO** on 3.3 V, power the HC-SR04 from VIN (5V) and use the
-1 kΩ + 2 kΩ divider on Echo (`Echo → 1 kΩ → D7`, `D7 → 2 kΩ → G`).
+1 kΩ + 2 kΩ divider on Echo (`Echo → 1 kΩ → D2`, `D2 → 2 kΩ → G`).
 
 **Tsunami alert:** water 4 cm or closer to the ultrasonic sensor (sea level high) **and** a shake level of 50/100 or more, together for 0.5 s (`SEA_HIGH_CM`, `QUAKE_SHAKE_MIN` in `serial_dashboard.py`). The HC-SR04 cannot measure closer than about 2 cm.
 

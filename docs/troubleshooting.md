@@ -32,6 +32,16 @@ start the sketch. Red is on **D7** now.
 - Some HC-SR04 modules do not work on 3.3 V: power from 5V/VIN and put a
   1 kΩ + 2 kΩ divider on Echo.
 
+## Parking gate: "Reader missing" / card does nothing
+
+- The RC522 must be on **3.3V**, never 5V. Check SDA → D8, SCK → D5, MOSI → D7, MISO → D6, RST → D0.
+- The Serial Monitor (115200) prints `NFC reader OK` at start and `Card 04A1B2C3 -> ...` for each
+  tap. No `Card` line = the reader doesn't see the card: hold it flat on the reader, 1-2 cm away.
+- `UNKNOWN, gate stays shut` = the card isn't saved yet: press **Allow** on the dashboard and tap again.
+- The servo moves the wrong way: swap `GATE_CLOSED_DEG` and `GATE_OPEN_DEG` in the sketch.
+- The board resets when the servo moves: use a better USB charger, or a separate 5V for the servo
+  (grounds joined).
+
 ## OLED stuck on one screen
 
 The display only shows screens it has data for. If it stays on **Temperature**, the
