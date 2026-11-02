@@ -26,6 +26,7 @@ The page works in portrait and landscape and updates instantly when a sensor cha
 | Status Display | A live copy of what the OLED in the model is showing |
 | Traffic Signal | Manual / Auto, tap a lamp to switch it, live ultrasonic distance |
 | Seismic Monitor | Live 60 s seismograph, Calm / Light / Moderate / Strong, distance, sea level and shake level |
+| Raspberry Pi | CPU temperature, power (under-voltage), CPU load, memory, wifi name + signal, up time, SD card space, the address to open, and a **Restart dashboard** button (tap twice) |
 | Parking Gate | NFC card reader + servo barrier: Open / Closed, last card (Allowed / Denied), opens today, saved cards and recent taps |
 | City History | 24 h charts and an event log |
 

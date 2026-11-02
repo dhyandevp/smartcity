@@ -321,6 +321,10 @@ def snapshot():
             snap["seismic"] = {k: seismic[k] for k in ("vib", "pulses", "cm", "base", "move", "intensity")}
             snap["seismic"]["ageSec"] = round(now - seismic["seen"], 1)
         snap["gate"] = gate_snapshot(now)
+        if system_info.get("t"):
+            snap["system"] = {k: v for k, v in system_info.items() if k not in ("t", "started")}
+            snap["system"]["ageSec"] = round(now - system_info["t"], 1)
+            snap["system"]["runSec"] = int(now - system_info["started"])
         snap["quake"] = {"active": quake["active"], "peak": quake["peak"],
                          "agoSec": round(now - quake["since"], 1) if quake["since"] else 0}
         if traffic["seen"] is None:
@@ -330,6 +334,108 @@ def snapshot():
                                "yellow": traffic["yellow"], "green": traffic["green"],
                                "cm": traffic["cm"], "ageSec": round(now - traffic["seen"], 1)}
         return json.dumps(snap)
+
+# ---- Raspberry Pi system info for the dashboard (every 5 s) ----
+import shutil
+import subprocess
+SYSTEM_EVERY_SEC = 5
+system_info = {"t": None}
+
+
+def _read(path):
+    try:
+        with open(path, "r") as f:
+            return f.read()
+    except OSError:
+        return ""
+
+
+def read_system():
+    info = {}
+    t = _read("/sys/class/thermal/thermal_zone0/temp").strip()
+    info["tempC"] = round(int(t) / 1000, 1) if t.isdigit() else None
+    info["power"] = None                              # None = unknown, "ok", "low" (now), "was" (since boot)
+    try:
+        out = subprocess.run(["vcgencmd", "get_throttled"], capture_output=True, text=True, timeout=3).stdout
+        m = re.search(r"0x([0-9a-fA-F]+)", out)
+        if m:
+            v = int(m.group(1), 16)
+            info["power"] = "low" if v & 0x1 else "was" if v & 0x10000 else "ok"
+            info["throttled"] = bool(v & 0x4)
+    except (OSError, subprocess.SubprocessError):
+        pass
+    la = _read("/proc/loadavg").split()
+    cores = os.cpu_count() or 1
+    info["cpu"] = min(100, round(float(la[0]) / cores * 100)) if la else None
+    mem = dict(re.findall(r"^(\w+):\s+(\d+)", _read("/proc/meminfo"), re.M))
+    if "MemTotal" in mem and "MemAvailable" in mem:
+        tot, av = int(mem["MemTotal"]), int(mem["MemAvailable"])
+        info["mem"] = round((tot - av) / tot * 100)
+        info["memMB"] = round(tot / 1024)
+    up = _read("/proc/uptime").split()
+    info["uptime"] = int(float(up[0])) if up else None
+    ssid = ""
+    try:
+        ssid = subprocess.run(["iwgetid", "-r"], capture_output=True, text=True, timeout=3).stdout.strip()
+    except (OSError, subprocess.SubprocessError):
+        pass
+    if not ssid:
+        try:
+            out = subprocess.run(["nmcli", "-t", "-f", "active,ssid", "dev", "wifi"], capture_output=True,
+                                 text=True, timeout=4).stdout
+            ssid = next((l[4:] for l in out.splitlines() if l.startswith("yes:")), "")
+        except (OSError, subprocess.SubprocessError):
+            pass
+    info["ssid"] = ssid or None
+    sig = None
+    for line in _read("/proc/net/wireless").splitlines()[2:]:
+        parts = line.split()
+        if parts and parts[0].startswith("wlan"):
+            try:
+                q = float(parts[2].rstrip("."))
+                sig = round(min(100, q / 70 * 100))
+            except (ValueError, IndexError):
+                pass
+    info["signal"] = sig
+    info["ip"] = get_lan_ip()
+    try:
+        du = shutil.disk_usage("/")
+        info["diskFreeGB"] = round(du.free / 1e9, 1)
+        info["diskPct"] = round(du.used / du.total * 100)
+    except OSError:
+        pass
+    model = _read("/proc/device-tree/model").strip("\x00\n ")
+    info["model"] = model.replace("Raspberry Pi", "Pi").replace(" Model ", " ").replace(" Rev ", " r") or None
+    info["host"] = socket.gethostname()
+    return info
+
+
+def system_loop():
+    while True:
+        try:
+            data = read_system()
+            with state_lock:
+                system_info.clear()
+                system_info.update(data, t=time.time(), started=STARTED_AT)
+        except Exception as e:
+            print("System info error:", e)
+        time.sleep(SYSTEM_EVERY_SEC)
+
+
+STARTED_AT = time.time()
+
+
+def restart_dashboard():
+    """Restart this program (same arguments). Works under systemd and when started by hand."""
+    print("Restarting the dashboard (asked from the page)")
+    hist_event("system", "Dashboard restarted from the page")
+    time.sleep(0.6)                                 # let the HTTP answer go out first
+    sys.stdout.flush()
+    try:
+        os.execv(sys.executable, [sys.executable] + sys.argv)
+    except OSError:
+        os._exit(1)                                 # systemd (Restart=always) brings it back
+
 
 RE_ANALOG_DIGITAL = re.compile(
     r'^\[(\w+)\]\s+(\S+)\s+raw=(-?\d+)\s+volt=([\d.]+)V\s*\|\s*\[(\w+)\]\s+digital=(HIGH|LOW)$'
@@ -1356,6 +1462,31 @@ DASHBOARD_HTML = """<!DOCTYPE html>
   .seisStats b { display: block; font-size: 15px; font-weight: 600; font-variant-numeric: tabular-nums; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   @media (max-width: 560px) { .seisStats { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
 
+  /* ---------- raspberry pi system ---------- */
+  .sysTop { display: flex; align-items: flex-end; justify-content: space-between; gap: 16px; margin-top: 22px; flex-wrap: wrap; }
+  .sysTop .big { font-size: 52px; font-weight: 600; }
+  .sysWord { font-size: 13.5px; color: var(--dim); margin-top: 6px; }
+  .sysTemp { flex: 1 1 200px; max-width: 300px; }
+  .sysBar { position: relative; height: 12px; border-radius: 999px; margin-top: 8px;
+            background: linear-gradient(90deg, var(--mint) 0 50%, #ffe08a 50% 80%, var(--peach) 80% 90%, #ff8a7a 90%); }
+  .sysBar i { position: absolute; top: 50%; width: 18px; height: 18px; border-radius: 50%; background: var(--ink); border: 3px solid #fff;
+              transform: translate(-50%, -50%); left: 0; transition: left .6s var(--ease); box-shadow: 0 2px 6px rgba(0, 0, 0, .2); }
+  .sysLeg { position: relative; height: 14px; font-size: 11px; color: var(--dim); margin-top: 6px; }
+  .sysLeg span { position: absolute; transform: translateX(-50%); }
+  .sysLeg span:first-child { transform: none; }
+  .sysLeg span:last-child { transform: translateX(-100%); }
+  .sysPow { display: flex; align-items: center; gap: 10px; margin-top: 16px; padding: 11px 14px; border-radius: 16px; background: var(--peach); font-size: 13px; }
+  .sysPow[hidden] { display: none; }
+  .sysPow b { font-weight: 600; }
+  .sysStats { grid-template-columns: repeat(3, minmax(0, 1fr)); margin-top: 18px; }
+  .sysStats small { display: block; font-size: 11px; color: var(--dim); margin-top: 1px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .sysMini { height: 4px; border-radius: 4px; background: #dfe3de; margin-top: 7px; overflow: hidden; }
+  .sysMini i { display: block; height: 100%; width: 0; background: var(--ink); border-radius: 4px; transition: width .6s var(--ease), background-color .3s; }
+  .sysMini i.hi { background: var(--peachD); }
+  .sysFoot { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-top: 18px; flex-wrap: wrap; }
+  .sysFoot .foot { margin-top: 0; }
+  #sysMsg:empty { display: none; }
+  @media (max-width: 560px) { .sysStats { grid-template-columns: repeat(2, minmax(0, 1fr)); } .sysTop .big { font-size: 44px; } }
   /* ---------- parking gate ---------- */
   .gateTop { display: flex; align-items: flex-end; gap: 22px; margin-top: 16px; flex-wrap: wrap; }
   .gateSvg { width: 124px; height: 110px; flex: none; overflow: visible; }
@@ -1781,6 +1912,25 @@ DASHBOARD_HTML = """<!DOCTYPE html>
           </div>
         </section>
 
+        <!-- Street lighting -->
+        <section class="card white" id="c-Light">
+          <div class="head">
+            <div class="hl">
+              <span class="icon mint"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg></span>
+              <div>
+                <h2>Street Lighting</h2>
+                <div class="sub">Ambient light · LDR</div>
+              </div>
+            </div>
+            <span class="tag" id="t-Light">No data</span>
+          </div>
+          <div class="lightRow">
+            <div class="big" id="v-Light">--</div>
+            <div class="segs" id="lightSegs"></div>
+          </div>
+          <div class="foot">Light level measured on the mountain node</div>
+        </section>
+
 
         <!-- Status display preview -->
         <section class="card white" id="c-disp">
@@ -1799,6 +1949,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
           </div></div>
           <div class="foot" id="dispFoot">Live copy of what the display in the model is showing</div>
         </section>
+
         <!-- Parking gate -->
         <section class="card white" id="c-gate">
           <div class="head">
@@ -1879,23 +2030,40 @@ DASHBOARD_HTML = """<!DOCTYPE html>
           </div>
         </section>
 
-        <!-- Street lighting -->
-        <section class="card white" id="c-Light">
+
+        <!-- Raspberry Pi -->
+        <section class="card white" id="c-sys">
           <div class="head">
             <div class="hl">
-              <span class="icon mint"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg></span>
+              <span class="icon lav"><svg viewBox="0 0 24 24"><rect x="5" y="5" width="14" height="14" rx="2.5"/><rect x="9" y="9" width="6" height="6" rx="1"/><path d="M9 2v3M15 2v3M9 19v3M15 19v3M2 9h3M2 15h3M19 9h3M19 15h3"/></svg></span>
               <div>
-                <h2>Street Lighting</h2>
-                <div class="sub">Ambient light · LDR</div>
+                <h2>Raspberry Pi</h2>
+                <div class="sub" id="sysSub">The city's brain · runs this dashboard</div>
               </div>
             </div>
-            <span class="tag" id="t-Light">No data</span>
+            <span class="tag" id="sysPill">Waiting</span>
           </div>
-          <div class="lightRow">
-            <div class="big" id="v-Light">--</div>
-            <div class="segs" id="lightSegs"></div>
+          <div class="sysTop">
+            <div><div class="big" id="sysTemp">--</div><div class="sysWord" id="sysWord">CPU temperature</div></div>
+            <div class="sysTemp">
+              <div class="sysBar"><i id="sysKnob"></i></div>
+              <div class="sysLeg"><span style="left:0">30</span><span style="left:50%">55</span><span style="left:80%">70</span><span style="left:100%">80°</span></div>
+            </div>
           </div>
-          <div class="foot">Light level measured on the mountain node</div>
+          <div class="sysPow" id="sysPow" hidden><span>⚡</span><div id="sysPowTxt"></div></div>
+          <div class="seisStats sysStats">
+            <div><span>Power</span><b id="sysPower">--</b><small id="sysPowerS">&nbsp;</small></div>
+            <div><span>CPU load</span><b id="sysCpu">--</b><div class="sysMini"><i id="sysCpuB"></i></div></div>
+            <div><span>Memory</span><b id="sysMem">--</b><div class="sysMini"><i id="sysMemB"></i></div></div>
+            <div><span>Wifi</span><b id="sysWifi">--</b><small id="sysWifiS">&nbsp;</small></div>
+            <div><span>Up time</span><b id="sysUp">--</b><small id="sysUpS">&nbsp;</small></div>
+            <div><span>SD card</span><b id="sysDisk">--</b><div class="sysMini"><i id="sysDiskB"></i></div></div>
+          </div>
+          <div class="sysFoot">
+            <div class="foot" id="sysAddr">Waiting for the Pi</div>
+            <button class="gbtn ghost" id="sysRestart" type="button">Restart dashboard</button>
+          </div>
+          <div class="mmsg" id="sysMsg"></div>
         </section>
 
         <!-- Seismic monitor -->
@@ -2445,6 +2613,7 @@ function render(data) {
     quakePeak = data.quake.peak || 0;
   }
   if (data.gate) gateRender(data.gate);
+  if (data.system) { sysd = data.system; sysAt = Date.now() - data.system.ageSec * 1000; }
   if (data.matrix) { mxSeenAt = Date.now() - data.matrix.ageSec * 1000; mxScreen = data.matrix.screen || null; }
   if (data.alarm) {
     alarmActive = !!data.alarm.active;
@@ -2604,6 +2773,7 @@ function paint() {
   paintDisplay();
   paintSeismic();
   paintGate();
+  paintSys();
   const sf = seisFresh() && seis;
   $("zd-seismic").className = "tdot" + (!sf ? "" : quakeActive || seisLevel(seis.intensity) >= 2 ? " warn" : " ok");
   $("zt-seismic").textContent = !sf ? (seisSeenAt ? "Offline" : "No data") : quakeActive ? "TSUNAMI ALERT" : SEIS_WORDS[seisLevel(seis.intensity)];
@@ -2677,6 +2847,76 @@ function paintSeismic() {
 }
 setInterval(seisSample, 200);
 
+// ---- Raspberry Pi system card ----
+let sysd = null, sysAt = 0, sysSure = false, sysSureT = 0, sysRestarting = 0;
+function sysFresh() { return sysAt > 0 && Date.now() - sysAt < 15000; }
+function fmtDur(s) {
+  if (s === null || s === undefined) return "--";
+  const d = Math.floor(s / 86400), h = Math.floor(s % 86400 / 3600), m = Math.floor(s % 3600 / 60);
+  return d ? d + "d " + h + "h" : h ? h + "h " + m + "m" : m + "m";
+}
+function sysBar(id, pct, hi) {
+  const b = $(id);
+  b.style.width = (pct === null || pct === undefined ? 0 : Math.max(2, Math.min(100, pct))) + "%";
+  b.classList.toggle("hi", pct !== null && pct !== undefined && pct >= hi);
+}
+function paintSys() {
+  const s = sysd, fresh = sysFresh() && s;
+  $("c-sys").classList.toggle("stale", !fresh);
+  if (sysRestarting) {
+    if (!linkLost && lastRecv > sysRestarting + 1500) {
+      sysRestarting = 0;
+      $("sysMsg").textContent = "Dashboard restarted ✓";
+      setTimeout(() => { $("sysMsg").textContent = ""; }, 4000);
+    } else { setTag("sysPill", "Restarting…", "info"); return; }
+  }
+  if (!fresh) { setTag("sysPill", sysAt ? "No data" : "Waiting", ""); return; }
+  const t = s.tempC, pw = s.power;
+  const hot = t !== null && t >= 80, warm = t !== null && t >= 70;
+  const bad = hot || pw === "low" || !s.ssid;
+  const mid = warm || pw === "was" || (s.signal !== null && s.signal < 30) || (s.diskFreeGB !== undefined && s.diskFreeGB < 1);
+  setTag("sysPill", bad ? "Needs attention" : mid ? "Check" : "Healthy", bad || mid ? "warn" : "ok");
+  if (t === null) $("sysTemp").textContent = "--";
+  else countTo($("sysTemp"), t.toFixed(1), v => v.appendChild(el("small", "", "°C")));
+  $("sysWord").textContent = t === null ? "CPU temperature not available" :
+    "CPU temperature · " + (hot ? "too hot, slowing down" : warm ? "hot, give it air" : t >= 55 ? "warm, fine" : "cool");
+  $("sysKnob").style.left = t === null ? "0%" : Math.max(0, Math.min(100, (t - 30) / 50 * 100)) + "%";
+  $("sysPower").textContent = pw === "ok" ? "Good" : pw === "low" ? "LOW" : pw === "was" ? "Dipped" : "--";
+  $("sysPower").style.color = pw === "low" ? "#e0362a" : pw === "was" ? "#c2410c" : "";
+  $("sysPowerS").textContent = pw === "ok" ? "no under-voltage" : pw === "low" ? "under-voltage now" : pw === "was" ? "since boot" : "not measured";
+  $("sysPow").hidden = !(pw === "low" || pw === "was");
+  $("sysPowTxt").innerHTML = pw === "low" ? "<b>Power too low right now.</b> Use a 5V 2.5A charger and a short cable, or wifi and USB will drop." :
+    "<b>The power dipped since the Pi started.</b> A stronger charger keeps everything stable.";
+  $("sysCpu").textContent = s.cpu === null || s.cpu === undefined ? "--" : s.cpu + "%";
+  sysBar("sysCpuB", s.cpu, 80);
+  $("sysMem").textContent = s.mem === undefined ? "--" : s.mem + "%";
+  sysBar("sysMemB", s.mem, 85);
+  $("sysWifi").textContent = s.ssid || "Not connected";
+  $("sysWifi").style.color = s.ssid ? "" : "#e0362a";
+  $("sysWifiS").textContent = s.signal === null || s.signal === undefined ? (s.ssid ? "signal --" : " ") :
+    "signal " + s.signal + "% · " + (s.signal >= 70 ? "strong" : s.signal >= 40 ? "OK" : "weak");
+  $("sysUp").textContent = fmtDur(s.uptime);
+  $("sysUpS").textContent = "dashboard " + fmtDur(s.runSec);
+  $("sysDisk").textContent = s.diskFreeGB === undefined ? "--" : s.diskFreeGB + " GB free";
+  sysBar("sysDiskB", s.diskPct, 90);
+  $("sysSub").textContent = (s.model || "Raspberry Pi") + " · runs this dashboard";
+  $("sysAddr").innerHTML = "Open on any phone: <b>http://" + esc(s.ip && s.ip !== "127.0.0.1" ? s.ip : (s.host || "admin") + ".local") + ":8765</b>";
+}
+$("sysRestart").addEventListener("click", () => {
+  const b = $("sysRestart");
+  clearTimeout(sysSureT);
+  if (!sysSure) {
+    sysSure = true; b.textContent = "Sure? Tap again"; b.classList.add("sure");
+    sysSureT = setTimeout(() => { sysSure = false; b.textContent = "Restart dashboard"; b.classList.remove("sure"); }, 3000);
+    return;
+  }
+  sysSure = false; b.textContent = "Restart dashboard"; b.classList.remove("sure");
+  b.disabled = true; setTimeout(() => { b.disabled = false; }, 8000);
+  $("sysMsg").textContent = "Restarting… the page reconnects by itself in a few seconds";
+  fetch("/system/restart", {method: "POST"})
+    .then(() => { sysRestarting = Date.now(); paintSys(); })
+    .catch(() => { $("sysMsg").textContent = "Could not reach the dashboard"; });
+});
 // ---- parking gate: NFC reader + servo on the seismic NodeMCU ----
 let gt = null, gateSeenAt = 0, gateScanAt = 0, gateMsgTimer = 0, gateSure = "", gateSureTimer = 0, gateSig = "", gateLogSig = "";
 function gateFresh() { return gateSeenAt > 0 && (Date.now() - gateSeenAt) < 3000; }
@@ -3187,6 +3427,16 @@ class Handler(BaseHTTPRequestHandler):
         if self.path == "/traffic":
             self.handle_traffic_post()
             return
+        if self.path == "/system/restart":
+            body = b'{"ok":true}'
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+            self.wfile.flush()
+            threading.Thread(target=restart_dashboard, daemon=True).start()
+            return
         if self.path in ("/gate/allow", "/gate/remove"):
             self.handle_gate_post()
             return
@@ -3322,6 +3572,7 @@ def main():
     threading.Thread(target=weather_loop, daemon=True).start()
     threading.Thread(target=alarm_loop, daemon=True).start()
     threading.Thread(target=matrix_loop, daemon=True).start()
+    threading.Thread(target=system_loop, daemon=True).start()
     load_gate_cards()
     make_sample_history()
     hist_event("system", "Dashboard started")

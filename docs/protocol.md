@@ -55,5 +55,6 @@ The Arduino Nano is on USB serial instead, printing lines like
 | GET | `/alarm.mp3` | Alarm sound |
 | POST | `/traffic` | Mode or single light |
 | POST | `/alarm/silence` | Silence the disaster and tsunami alarms |
+| POST | `/system/restart` | Restart the dashboard program (back in about 3 s) |
 | POST | `/gate/allow` | `{"uid":"04A1B2C3"}`: save a card for the parking gate (up to 10) |
 | POST | `/gate/remove` | `{"uid":"04A1B2C3"}`: remove a saved card |
