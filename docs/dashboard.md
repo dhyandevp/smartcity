@@ -25,7 +25,7 @@ The page works in portrait and landscape and updates instantly when a sensor cha
 | Street Lighting | Ambient light level from the LDR |
 | Status Display | A live copy of what the OLED in the model is showing |
 | Traffic Signal | Manual / Auto, tap a lamp to switch it, live ultrasonic distance |
-| Seismic Monitor | Live 60 s seismograph, Calm / Light / Moderate / Strong, distance, sea level and shake level |
+| Seismic Monitor | Live 60 s seismograph, Calm / Light / Moderate / Strong, distance, sea movement and shake level |
 | Raspberry Pi | CPU temperature, power (under-voltage), CPU load, memory, wifi name + signal, up time, SD card space, the address to open, and a **Restart dashboard** button (tap twice) |
 | Parking Gate | NFC card reader + servo barrier: Open / Closed, last card (Allowed / Denied), opens today, saved cards and recent taps |
 | City History | 24 h charts and an event log |
@@ -35,7 +35,7 @@ The page works in portrait and landscape and updates instantly when a sensor cha
 | Alarm | Fires when | Stops |
 |---|---|---|
 | **Potential disaster · Mountain** | Motion **and** vibration on together for 0.5 s | 30 s of quiet, or tap **Silence** |
-| **Tsunami alert** | Sea level high (water 4 cm or closer to the sensor) **and** shake level 50+, together for 0.5 s | 30 s of calm, or tap **Silence** |
+| **Tsunami alert** | Water moving 2 cm or more (ultrasonic) **and** shake level 50+, together for 0.5 s | 30 s of calm, or tap **Silence** |
 
 Both show a red banner, play `alarm.mp3`, flash the matching card and switch the OLED to
 its warning screen. After **Silence** the alarm re-arms once the sensors calm down.

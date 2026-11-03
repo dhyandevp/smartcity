@@ -37,7 +37,7 @@ HTTP = "http://127.0.0.1:8765"
 WIFI_NAME = "rishi"
 LISTEN_SEC = 15
 # features the latest dashboard must have (older copies miss some of these)
-FEATURES = {"tsunami rule (sea level 4 cm + shake 50)": "SEA_HIGH_CM",
+FEATURES = {"tsunami rule (sea moves 2 cm + shake 50)": "SEA_MOVE_CM",
             "parking gate (NFC + servo)": "def gate_ack",
             "gas by level (50 / 45 %)": "GAS_ALERT_PCT",
             "seismic answer port 8770": "SEISMIC_ACK_PORT"}
@@ -343,7 +343,7 @@ def age_of(key):
     return None if not v else v.get("ageSec")
 NODES = [("Mountain", "mountain", 6, "motion · vibration · light"),
          ("Traffic", "traffic", 6, "traffic lights + ultrasonic"),
-         ("Seismic + gate", "seismic", 3, "sea level · shake · NFC gate"),
+         ("Seismic + gate", "seismic", 3, "sea movement · shake · NFC gate"),
          ("Display (OLED)", "matrix", 6, "status screen")]
 for name, key, fresh, what in NODES:
     a = age_of(key)

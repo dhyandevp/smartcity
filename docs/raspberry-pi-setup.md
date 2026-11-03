@@ -104,6 +104,6 @@ At the top of `serial_dashboard.py`:
 | `HTTP_PORT` | `8765` | Dashboard web port |
 | `WEATHER_PLACE`, `WEATHER_LAT`, `WEATHER_LON` | Koothuparamba | Where the live temperature comes from |
 | `ALARM_BOTH_SEC` / `ALARM_CLEAR_SEC` | 0.5 s / 30 s | Mountain alarm: trigger time / auto-stop after quiet |
-| `SEA_HIGH_CM` / `QUAKE_SHAKE_MIN` | 4.0 cm / 50 | Tsunami alert: water this close = sea level high / shake level that counts |
+| `SEA_MOVE_CM` / `QUAKE_SHAKE_MIN` | 2.0 cm / 50 | Tsunami alert: water movement that counts / shake level that counts |
 | `QUAKE_BOTH_SEC` / `QUAKE_CLEAR_SEC` | 0.5 s / 30 s | Tsunami alert: trigger time / auto-stop after calm |
 | `CITY_UTC_OFFSET_MIN` | 330 | Time zone used for the history (India, UTC+5:30) |

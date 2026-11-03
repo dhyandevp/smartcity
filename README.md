@@ -14,7 +14,7 @@ alarm on the mountain, a tsunami monitor, an NFC parking gate and a small status
 - **City overview**: one glance at weather, environment, security, seismic, lighting, traffic, the parking gate and the display
 - **Environment**: rain, gas (air quality) and soil moisture from an Arduino Nano; live temperature from the internet (Open-Meteo, Koothuparamba)
 - **Mountain disaster alarm**: PIR motion + vibration on together for 0.5 s → red banner, siren sound and a flashing *DANGER* screen
-- **Tsunami monitor**: sea level high (water 4 cm or closer to the ultrasonic) + shake level 50 or more, together for 0.5 s → *Tsunami alert* with a live seismograph
+- **Tsunami monitor**: ultrasonic sees the water move 2 cm or more + shake level 50 or more, together for 0.5 s → *Tsunami alert* with a live seismograph
 - **NFC parking gate**: a saved card on the RC522 reader opens a servo barrier for 2 s; unknown cards stay shut and can be allowed from the dashboard
 - **Smart traffic signal**: manual control from the dashboard, or auto mode where an ultrasonic sensor turns the light yellow (< 20 cm) and red (< 10 cm)
 - **Street lighting**: ambient light level from an LDR

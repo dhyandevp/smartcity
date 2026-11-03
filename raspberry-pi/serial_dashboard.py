@@ -79,9 +79,9 @@ ALARM_CLEAR_SEC = 30     # both sensors back to normal this long -> alarm stops 
 alarm = {"active": False, "since": None, "both_since": None, "calm_since": None, "armed": True}
 
 # ---- Seismic node (XIAO ESP32-C3): vibration pulses + ultrasonic movement, 5 times a second ----
-SEA_HIGH_CM = 4.0         # ultrasonic distance to the water this close (or closer) = sea level HIGH
+SEA_MOVE_CM = 2.0         # water surface moved this much (cm, from its normal level) = the sea is moving
 QUAKE_SHAKE_MIN = 50      # vibration shake level (0-100) at or above this = strong shaking
-QUAKE_BOTH_SEC = 0.5      # sea level HIGH and strong shaking both on together this long -> tsunami alert
+QUAKE_BOTH_SEC = 0.5      # sea moving and strong shaking both on together this long -> tsunami alert
 QUAKE_WINDOW = 1.0        # nothing for this long = calm (used to stop the alert)
 SEISMIC_ACK_PORT = 8770   # we answer the seismic node here, so it knows the Pi hears it
 QUAKE_CLEAR_SEC = 30      # no movement and no shaking this long -> earthquake alert stops by itself
@@ -538,7 +538,7 @@ def apply_seismic(data, addr):
                        base=None if nums["base"] < 0 else round(float(nums["base"]), 1),
                        move=move, intensity=seismic_intensity(pulses, vib, dt))
         shaking = seismic["intensity"] >= QUAKE_SHAKE_MIN          # strong shaking
-        moved = cm is not None and cm <= SEA_HIGH_CM               # water close to the sensor = sea level high
+        moved = cm is not None and move >= SEA_MOVE_CM              # ultrasonic sees the water move
         if shaking:
             seismic["shake_at"] = now
         if moved:
@@ -560,7 +560,7 @@ def apply_seismic(data, addr):
 
 
 def quake_tick(now):
-    """Tsunami alert = sea level HIGH (water <= SEA_HIGH_CM) AND strong shaking, together for QUAKE_BOTH_SEC.
+    """Tsunami alert = water moving (ultrasonic, >= SEA_MOVE_CM) AND strong shaking, together for QUAKE_BOTH_SEC.
     Call with state_lock held."""
     s = seismic
     online = s["seen"] is not None and now - s["seen"] < 3
@@ -577,7 +577,7 @@ def quake_tick(now):
             and now - quake["both_since"] >= QUAKE_BOTH_SEC):
         quake.update(active=True, since=now, calm_since=None, peak=s["intensity"])
         changed = True
-        print("TSUNAMI ALERT: sea level high + strong shaking for %.1f s" % QUAKE_BOTH_SEC)
+        print("TSUNAMI ALERT: sea moving + strong shaking for %.1f s" % QUAKE_BOTH_SEC)
     if quake["active"]:
         if not calm:
             quake["calm_since"] = None
@@ -916,7 +916,7 @@ def history_tick(prev, dt):
         hist_event("alarm", "Potential disaster · Mountain (motion + vibration)" if cur["alarm"]
                    else "Alarm stopped", "warn" if cur["alarm"] else "ok")
     if prev.get("quake") is not None and prev["quake"] != cur["quake"]:
-        hist_event("quake", "Tsunami alert · sea level high + strong shaking" if cur["quake"]
+        hist_event("quake", "Tsunami alert · sea moving + strong shaking" if cur["quake"]
                    else "Tsunami alert ended", "warn" if cur["quake"] else "ok")
     if changed("trafficMode"):
         hist_event("traffic", "Traffic signal set to " + cur["trafficMode"])
@@ -1742,7 +1742,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
             <li><i class="tdot" id="zd-weather"></i><b>Weather</b><span id="zt-weather">No data</span><small>Rainfall · Temperature</small></li>
             <li><i class="tdot" id="zd-environment"></i><b>Environment</b><span id="zt-environment">No data</span><small>Air quality · Soil moisture</small></li>
             <li><i class="tdot" id="zd-security"></i><b>Security</b><span id="zt-security">No data</span><small>Motion · Vibration</small></li>
-            <li><i class="tdot" id="zd-seismic"></i><b>Seismic</b><span id="zt-seismic">No data</span><small>Shaking · Sea level</small></li>
+            <li><i class="tdot" id="zd-seismic"></i><b>Seismic</b><span id="zt-seismic">No data</span><small>Shaking · Sea movement</small></li>
             <li><i class="tdot" id="zd-lighting"></i><b>Street lighting</b><span id="zt-lighting">No data</span><small>Ambient light</small></li>
             <li><i class="tdot" id="zd-traffic"></i><b>Traffic signal</b><span id="zt-traffic">No data</span><small>Red · Yellow · Green · Ultrasonic</small></li>
             <li><i class="tdot" id="zd-gate"></i><b>Parking gate</b><span id="zt-gate">No data</span><small>NFC reader · Servo</small></li>
@@ -2086,11 +2086,11 @@ DASHBOARD_HTML = """<!DOCTYPE html>
           <div class="seisAxis"><span>60 s ago</span><span>30 s</span><span>now</span></div>
           <div class="seisStats">
             <div><span>Distance</span><b id="seisCm">--</b></div>
-            <div><span>Sea level</span><b id="seisBase">--</b></div>
+            <div><span>Sea</span><b id="seisBase">--</b></div>
             <div><span>Shake level</span><b id="seisMove">--</b></div>
             <div><span>Shakes</span><b id="seisPulse">--</b></div>
           </div>
-          <div class="foot">Tsunami alert when the water is 4 cm or closer to the sensor (sea level high) <b>and</b> the shake level is 50 or more, both together for 0.5 s</div>
+          <div class="foot">Tsunami alert when the ultrasonic sees the water move 2 cm or more <b>and</b> the shake level is 50 or more, both together for 0.5 s</div>
         </section>
       </div>
     </div>
@@ -2462,8 +2462,8 @@ function paintAlarm() {
   $("secCard").classList.toggle("alarm", alarmActive);
   $("c-seis").classList.toggle("alarm", quakeActive);
   if (quakeActive) {
-    $("alarmTitle").textContent = "Tsunami alert · Sea level high" + (alarmActive ? " + Mountain" : "");
-    $("alarmTxt").textContent = "Sea level high and strong shaking together · started " +
+    $("alarmTitle").textContent = "Tsunami alert · Sea moving" + (alarmActive ? " + Mountain" : "");
+    $("alarmTxt").textContent = "Sea movement and strong shaking together · started " +
       fmtAgo((Date.now() - quakeAt) / 1000) + " · take cover · stops after 30 s of calm, or tap Silence";
   } else if (alarmActive) {
     $("alarmTitle").textContent = "Potential disaster · Mountain";
@@ -2789,7 +2789,7 @@ function paint() {
 }
 
 // ---- seismic monitor: live shake trace (5 samples a second, last 60 s) ----
-const SEIS_N = 300, SEA_HIGH_CM = 4, QUAKE_SHAKE_MIN = 50;   // same as on the Pi
+const SEIS_N = 300, SEA_MOVE_CM = 2, QUAKE_SHAKE_MIN = 50;   // same as on the Pi
 let seis = null, seisSeenAt = 0, seisTrace = [], quakeActive = false, quakeAt = 0, quakePeak = 0;
 function seisFresh() { return seisSeenAt > 0 && (Date.now() - seisSeenAt) < 3000; }
 function seisLevel(v) { return v < 10 ? 0 : v < 35 ? 1 : v < 65 ? 2 : 3; }
@@ -2840,8 +2840,9 @@ function paintSeismic() {
   pill.textContent = quakeActive ? "TSUNAMI ALERT" : SEIS_WORDS[L].split(" ")[0];
   pill.className = "tag " + (quakeActive || L >= 2 ? "warn" : L === 1 ? "info" : "ok");
   $("seisCm").textContent = seis.cm === null ? "no echo" : seis.cm.toFixed(1) + " cm";
-  $("seisBase").textContent = seis.cm === null ? "--" : seis.cm <= SEA_HIGH_CM ? "HIGH" : "Normal";
-  $("seisBase").style.color = seis.cm !== null && seis.cm <= SEA_HIGH_CM ? "#e0362a" : "";
+  const seaMoving = seis.cm !== null && seis.move >= SEA_MOVE_CM;
+  $("seisBase").textContent = seis.cm === null ? "--" : seaMoving ? "Moving " + seis.move.toFixed(1) + " cm" : "Still";
+  $("seisBase").style.color = seaMoving ? "#e0362a" : "";
   $("seisMove").textContent = seis.intensity + " / 100";
   $("seisPulse").textContent = (seis.pulses * 5) + " /s";
 }
@@ -3146,7 +3147,7 @@ function aiTick() {
   else if (vib > 0.2) drivers.push("vibration on the mountain");
   if (mot > 0.2) drivers.push("movement on the slope");
   aiSet("slide", pc(pSlide), pSlide, aiLevel(pSlide, ["Low", "Moderate", "High"]),
-        quakeActive ? "Tsunami alert · sea level high and strong shaking" :
+        quakeActive ? "Tsunami alert · sea moving and strong shaking" :
         alarmActive ? "Disaster alarm active · motion and vibration together" :
         drivers.length ? "Driven by " + drivers.slice(0, 2).join(", ") : "Ground dry and still · slopes stable");
   aiSet("air", pc(pAir), pAir, aiLevel(pAir, ["Low", "Moderate", "High"]),
