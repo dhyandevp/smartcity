@@ -40,7 +40,11 @@ LISTEN_SEC = 15
 FEATURES = {"tsunami rule (sea moves 2 cm + shake 50)": "SEA_MOVE_CM",
             "parking gate (NFC + servo)": "def gate_ack",
             "gas by level (50 / 45 %)": "GAS_ALERT_PCT",
-            "seismic answer port 8770": "SEISMIC_ACK_PORT"}
+            "seismic answer port 8770": "SEISMIC_ACK_PORT",
+            "City Risk score": "function paintRisk",
+            "traffic density counter": "def density_snapshot",
+            "stable live stream (no false offline)": "def broadcast_loop",
+            "temperature for Thaliparamba": 'WEATHER_PLACE = "Thaliparamba"'}
 
 # ---------------------------------------------------------------- output
 TTY = sys.stdout.isatty()

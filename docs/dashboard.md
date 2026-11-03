@@ -17,14 +17,16 @@ The page works in portrait and landscape and updates instantly when a sensor cha
 
 | Card | Shows |
 |---|---|
+| City Risk | One 0-100 score for the whole city (Low < 30, Medium < 60, High), built from 5 hazards: tsunami, landslide, flood, air pollution and heat. Shows the main reason it is high. Any active alarm pushes it to 92+ |
 | City overview | 8 areas at a glance, plus the air quality and soil moisture tiles |
 | City AI | 4 live risk predictions (see below) |
 | Rainfall | Rain sensor level and recent bars |
-| Temperature | Live temperature for Koothuparamba (Open-Meteo, every 5 minutes) |
+| Temperature | Live temperature for Thaliparamba, Kannur (Open-Meteo, every 5 minutes) |
 | Security & Safety | Mountain motion and vibration, when each last triggered |
 | Street Lighting | Ambient light level from the LDR |
 | Status Display | A live copy of what the OLED in the model is showing |
 | Traffic Signal | Manual / Auto, tap a lamp to switch it, live ultrasonic distance |
+| Traffic Density | Vehicles a minute (last 5 min), road density % (12 a minute = 100 %, Low / Medium / Heavy), a 30-minute bar chart and a vehicle log. Every vehicle the traffic ultrasonic sees (closer than 20 cm) is logged as **live**; **sample** traffic fills in the rest, busier at 8-10 am and 4-7 pm |
 | Seismic Monitor | Live 60 s seismograph, Calm / Light / Moderate / Strong, distance, sea movement and shake level |
 | Raspberry Pi | CPU temperature, power (under-voltage), CPU load, memory, wifi name + signal, up time, SD card space, the address to open, and a **Restart dashboard** button (tap twice) |
 | Parking Gate | NFC card reader + servo barrier: Open / Closed, last card (Allowed / Denied), opens today, saved cards and recent taps |
@@ -42,6 +44,8 @@ its warning screen. After **Silence** the alarm re-arms once the sensors calm do
 
 Pop-up notifications also appear for rain starting/stopping, poor air quality, dry soil,
 high temperature, nodes going offline and every card tapped on the parking gate.
+A node only counts as offline after 10 s of silence, and never while the page itself has lost
+its link to the Pi (then the header says *Reconnecting* and the page reconnects by itself).
 
 ## Parking gate
 

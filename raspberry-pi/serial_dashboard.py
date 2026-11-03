@@ -54,9 +54,9 @@ mountain = {"seen": None, "values": {k: False for k in MOUNTAIN_KEYS},
 
 # ---- Online temperature (replaces the temperature sensor) ----
 # The Pi asks Open-Meteo (free, no key) for the current temperature at this spot.
-WEATHER_PLACE = "Koothuparamba"
-WEATHER_LAT = 11.83
-WEATHER_LON = 75.58
+WEATHER_PLACE = "Thaliparamba"     # Thaliparamba, Kannur
+WEATHER_LAT = 12.04
+WEATHER_LON = 75.36
 WEATHER_EVERY_SEC = 300      # ask every 5 minutes (retries after 30 s if it fails)
 WEATHER_URL = ("https://api.open-meteo.com/v1/forecast?latitude={lat}&longitude={lon}"
                "&current=temperature_2m&timezone=auto")
@@ -333,7 +333,8 @@ def snapshot():
             snap["traffic"] = {"mode": traffic["mode"], "red": traffic["red"],
                                "yellow": traffic["yellow"], "green": traffic["green"],
                                "cm": traffic["cm"], "ageSec": round(now - traffic["seen"], 1)}
-        return json.dumps(snap)
+    snap["density"] = density_snapshot(now)
+    return json.dumps(snap, separators=(",", ":"))
 
 # ---- Raspberry Pi system info for the dashboard (every 5 s) ----
 import shutil
@@ -939,10 +940,92 @@ def history_loop():
 def count_car(cm):
     """Called with every traffic reading: counts each time something comes close to the sensor."""
     near = cm is not None and cm < CAR_NEAR_CM
+    new_car = False
     with history_lock:
         if near and not history["cars_near"]:
             hist_bucket(hour_start(time.time()))["cars"] += 1
+            new_car = True
         history["cars_near"] = near
+    if new_car:
+        density_add(time.time(), cm, True)
+        print(f"Vehicle detected at the traffic signal ({cm:.0f} cm)")
+
+
+# ---- Traffic density: every vehicle the traffic ultrasonic sees is logged ----
+# SAMPLE vehicles (marked "sample" on the page) keep the road looking busy like a real town,
+# following the time of day; real vehicles from the sensor are added on top and marked "live".
+import random
+import collections
+DENSITY_WINDOW_MIN = 5         # vehicles per minute, averaged over the last 5 minutes
+DENSITY_FULL_PER_MIN = 12      # 12 vehicles a minute = 100 % (road full)
+DENSITY_KEEP_SEC = 30 * 60     # keep the last 30 minutes
+VEHICLE_TYPES = (("Car", 52), ("Bike", 26), ("Auto", 15), ("Bus", 7))
+density_lock = threading.Lock()
+density = {"log": collections.deque(), "next_fake": None, "live_total": 0, "rnd": random.Random()}
+
+
+def sample_rate_per_min(t):
+    """Sample traffic for the time of day (Kerala town): quiet at night, busy at school/office rush."""
+    lt = city_time(t)
+    h = lt.tm_hour + lt.tm_min / 60
+    if h < 5.5 or h >= 23:
+        return 0.6
+    if 8 <= h < 10 or 16 <= h < 19:
+        return 7.5
+    if 6.5 <= h < 21:
+        return 4.0
+    return 2.0
+
+
+def density_add(t, cm, live):
+    rnd = density["rnd"]
+    kind = rnd.choices([k for k, _ in VEHICLE_TYPES], [w for _, w in VEHICLE_TYPES])[0]
+    with density_lock:
+        density["log"].append((t, kind, None if cm is None else round(float(cm), 1), live))
+        if live:
+            density["live_total"] += 1
+
+
+def _density_fill(now):
+    """Add sample vehicles up to now (call with density_lock held)."""
+    rnd = density["rnd"]
+    if density["next_fake"] is None:                    # first time: fill the last 30 minutes
+        density["next_fake"] = now - DENSITY_KEEP_SEC
+    log = density["log"]
+    while density["next_fake"] <= now:
+        t = density["next_fake"]
+        if t > now - DENSITY_KEEP_SEC:
+            kind = rnd.choices([k for k, _ in VEHICLE_TYPES], [w for _, w in VEHICLE_TYPES])[0]
+            log.append((t, kind, round(rnd.uniform(4, 18), 1), False))
+        density["next_fake"] = t + 60 / sample_rate_per_min(t) * rnd.uniform(0.35, 1.65)   # steady but not robotic
+    if any(log[i][0] > log[i + 1][0] for i in range(max(0, len(log) - 8), len(log) - 1)):
+        density["log"] = log = collections.deque(sorted(log))
+    while log and log[0][0] < now - DENSITY_KEEP_SEC:
+        log.popleft()
+
+
+def density_snapshot(now):
+    with density_lock:
+        _density_fill(now)
+        log = list(density["log"])
+        live_total = density["live_total"]
+    win = [v for v in log if now - v[0] <= DENSITY_WINDOW_MIN * 60]
+    per_min = len(win) / DENSITY_WINDOW_MIN
+    pct = min(100, round(per_min / DENSITY_FULL_PER_MIN * 100))
+    bars = [0] * 30
+    for v in log:
+        i = int((now - v[0]) // 60)
+        if 0 <= i < 30:
+            bars[29 - i] += 1
+    gap = None
+    if len(win) >= 2:
+        gap = round((win[-1][0] - win[0][0]) / (len(win) - 1), 1)
+    return {"perMin": round(per_min, 1), "pct": pct,
+            "level": "Low" if pct < 35 else "Medium" if pct < 70 else "Heavy",
+            "bars": bars, "total30": len(log), "gapSec": gap, "busiest": max(bars),
+            "live30": sum(1 for v in log if v[3]), "liveTotal": live_total,
+            "log": [{"ago": round(now - t, 1), "type": k, "cm": cm, "live": lv}
+                    for t, k, cm, lv in reversed(log[-6:])]}
 
 
 def history_json():
@@ -987,17 +1070,49 @@ def history_json():
                       separators=(",", ":"))
 
 
+BROADCAST_MIN_GAP = 0.2     # at most 5 snapshots a second, however many packets arrive
+BROADCAST_HEARTBEAT = 1.0   # and at least one a second, so browsers always see fresh ages
+_broadcast_wake = threading.Event()
+
+
 def broadcast():
-    payload = snapshot()
-    with subscribers_lock:
-        dead = []
-        for q in subscribers:
-            try:
-                q.put_nowait(payload)
-            except queue.Full:
-                dead.append(q)  # slow/stuck client, drop it
-        for q in dead:
-            subscribers.remove(q)
+    """Something changed: the broadcast thread sends a fresh snapshot to every browser (coalesced)."""
+    _broadcast_wake.set()
+
+
+def _push(q, payload):
+    """Give a browser the newest snapshot; a slow browser just skips old ones (it is never dropped)."""
+    try:
+        q.put_nowait(payload)
+    except queue.Full:
+        try:
+            q.get_nowait()
+        except queue.Empty:
+            pass
+        try:
+            q.put_nowait(payload)
+        except queue.Full:
+            pass
+
+
+def broadcast_loop():
+    last = 0.0
+    while True:
+        _broadcast_wake.wait(BROADCAST_HEARTBEAT)
+        wait = BROADCAST_MIN_GAP - (time.time() - last)
+        if wait > 0:
+            time.sleep(wait)
+        _broadcast_wake.clear()
+        try:
+            payload = snapshot()
+        except Exception as e:                       # never let one bad value stop the live page
+            print("snapshot error:", e)
+            time.sleep(1)
+            continue
+        last = time.time()
+        with subscribers_lock:
+            for q in subscribers:
+                _push(q, payload)
 
 
 def handle_line(line):
@@ -1112,6 +1227,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
   .icon.mint { background: var(--mint); color: var(--ink); }
   .icon.white { background: #fff; color: var(--ink); }
   .icon.lav { background: var(--lav); color: var(--ink); }
+  .icon.peach { background: var(--peach); color: var(--ink); }
   .arr { width: 26px; height: 26px; border-radius: 50%; display: inline-grid; place-items: center; background: var(--mint); color: var(--ink); flex: none; }
   .arr.white { background: #fff; }
   .arr svg { width: 13px; height: 13px; stroke-width: 2.2; }
@@ -1450,7 +1566,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
   .seisGraph { display: block; width: 100%; height: 96px; margin-top: 20px; background: var(--soft); border-radius: 18px; }
   /* last card in a column fills the leftover height: let the seismograph / gate lists take it, not empty space */
   .col > #c-seis:last-child, .col > #c-gate:last-child { display: flex; flex-direction: column; }
-  .col > #c-seis:last-child .seisGraph { flex: 1 1 96px; height: auto; min-height: 96px; max-height: 260px; }
+  .col > #c-seis:last-child .seisGraph { flex: 1 1 96px; height: auto; min-height: 96px; max-height: 440px; }
   .col > #c-gate:last-child .gateLists { flex: 1 1 auto; align-items: stretch; }
   .col > #c-seis:last-child > .foot, .col > #c-gate:last-child > .foot { margin-top: auto; padding-top: 18px; }
   .seisGraph .mid { stroke: rgba(28, 28, 28, .12); stroke-width: 1; }
@@ -1462,6 +1578,45 @@ DASHBOARD_HTML = """<!DOCTYPE html>
   .seisStats b { display: block; font-size: 15px; font-weight: 600; font-variant-numeric: tabular-nums; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   @media (max-width: 560px) { .seisStats { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
 
+  /* ---------- city risk ---------- */
+  .risk { display: grid; grid-template-columns: minmax(0, 1.15fr) minmax(0, 1fr); gap: 28px; align-items: center; padding: 26px 30px; }
+  .riskNum { display: flex; align-items: baseline; gap: 10px; margin-top: 18px; flex-wrap: wrap; }
+  .riskNum .big { font-size: 72px; font-weight: 600; transition: color .4s; }
+  .riskNum .tag { align-self: center; margin-left: 6px; }
+  .riskBar { position: relative; height: 12px; border-radius: 999px; margin-top: 16px;
+             background: linear-gradient(90deg, var(--mint) 0 30%, #ffe08a 30% 60%, var(--peach) 60% 80%, #ff8a7a 80%); }
+  .riskBar i { position: absolute; top: 50%; width: 20px; height: 20px; border-radius: 50%; background: var(--ink); border: 3px solid #fff;
+               transform: translate(-50%, -50%); left: 0; transition: left .8s var(--ease); box-shadow: 0 2px 6px rgba(0, 0, 0, .2); }
+  .riskWhy { margin-top: 16px; font-size: 14px; padding: 11px 14px; border-radius: 16px; background: var(--soft); }
+  .riskWhy b { font-weight: 600; }
+  .risk.hi .riskWhy { background: var(--peach); }
+  .riskHz { display: grid; gap: 8px; align-content: start; }
+  .rz { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; column-gap: 12px; background: var(--soft);
+        border-radius: 16px; padding: 10px 14px; transition: background .3s; }
+  .rz span { font-size: 13.5px; }
+  .rz b { font-size: 15px; font-weight: 600; font-variant-numeric: tabular-nums; }
+  .rz .sysMini { grid-column: 1 / -1; margin-top: 7px; }
+  .rz.lead { background: #fff3ec; box-shadow: inset 0 0 0 1.5px var(--peach); }
+  @media (max-width: 760px) { .risk { grid-template-columns: minmax(0, 1fr); gap: 20px; padding: 24px; } .riskNum .big { font-size: 60px; } }
+  /* ---------- traffic density ---------- */
+  .densTop { display: flex; align-items: flex-end; justify-content: space-between; gap: 16px; margin-top: 20px; flex-wrap: wrap; }
+  .densTop .big { font-size: 52px; font-weight: 600; }
+  .densG { flex: 1 1 190px; max-width: 280px; }
+  .densG .dp { display: flex; justify-content: space-between; font-size: 13px; color: var(--dim); }
+  .densG .dp b { color: var(--ink); font-size: 15px; font-weight: 600; font-variant-numeric: tabular-nums; }
+  .densBar { position: relative; height: 12px; border-radius: 999px; margin-top: 8px; background: #dfe3de; overflow: hidden; }
+  .densBar i { position: absolute; left: 0; top: 0; bottom: 0; width: 0; border-radius: 999px; background: var(--mintD); transition: width .6s var(--ease), background-color .3s; }
+  .densBar i.mid { background: #e6b422; }
+  .densBar i.hi { background: var(--peachD); }
+  .densBars { display: flex; align-items: flex-end; gap: 3px; height: 74px; margin-top: 18px; padding: 8px 10px 0; background: var(--soft); border-radius: 18px; }
+  .densBars i { flex: 1; min-width: 0; height: 4%; background: var(--ink); border-radius: 3px 3px 0 0; opacity: .78; transition: height .5s var(--ease); }
+  .densBars i:last-child { background: var(--lavD); opacity: 1; }
+  .densLog { margin-top: 14px; padding-bottom: 4px; }
+  .densLog li { min-height: 36px; padding: 5px 0; }
+  .densLog .vt { width: 30px; height: 30px; border-radius: 50%; display: grid; place-items: center; background: #fff; flex: none; font-size: 15px; }
+  .densLog .lv { font-size: 11px; padding: 2px 8px; border-radius: 999px; background: #dfe3de; color: var(--dim); white-space: nowrap; }
+  .densLog .lv.live { background: var(--mint); color: var(--ink); }
+  .densLog .ago { font-size: 12px; color: var(--dim); white-space: nowrap; font-variant-numeric: tabular-nums; }
   /* ---------- raspberry pi system ---------- */
   .sysTop { display: flex; align-items: flex-end; justify-content: space-between; gap: 16px; margin-top: 22px; flex-wrap: wrap; }
   .sysTop .big { font-size: 52px; font-weight: 600; }
@@ -1731,6 +1886,26 @@ DASHBOARD_HTML = """<!DOCTYPE html>
 
   <main class="layout">
 
+    <!-- City Risk: one number for all hazards -->
+    <section class="card white risk" id="c-risk">
+      <div class="riskL">
+        <div class="head">
+          <div class="hl">
+            <span class="icon dark"><svg viewBox="0 0 24 24"><path d="M4 16a8 8 0 0 1 16 0"/><path d="M12 16l4-5"/><circle cx="12" cy="16" r="1.4"/><path d="M3 20h18"/></svg></span>
+            <div>
+              <h2>City Risk</h2>
+              <div class="sub">Every hazard in one score · updates every 2 s</div>
+            </div>
+          </div>
+        </div>
+        <div class="riskNum"><span class="big" id="riskVal">--</span><span class="seisOf">/100</span><span class="tag" id="riskPill">Calculating</span></div>
+        <div class="riskBar"><i id="riskKnob"></i></div>
+        <div class="sysLeg"><span style="left:0">0</span><span style="left:30%">30</span><span style="left:60%">60</span><span style="left:100%">100</span></div>
+        <div class="riskWhy" id="riskWhy">Collecting data from the sensors</div>
+      </div>
+      <div class="riskHz" id="riskHz"></div>
+    </section>
+
     <!-- City overview + air quality + soil -->
       <section class="card white overview">
         <div class="ovL">
@@ -1950,6 +2125,41 @@ DASHBOARD_HTML = """<!DOCTYPE html>
           <div class="foot" id="dispFoot">Live copy of what the display in the model is showing</div>
         </section>
 
+        <!-- Raspberry Pi -->
+        <section class="card white" id="c-sys">
+          <div class="head">
+            <div class="hl">
+              <span class="icon lav"><svg viewBox="0 0 24 24"><rect x="5" y="5" width="14" height="14" rx="2.5"/><rect x="9" y="9" width="6" height="6" rx="1"/><path d="M9 2v3M15 2v3M9 19v3M15 19v3M2 9h3M2 15h3M19 9h3M19 15h3"/></svg></span>
+              <div>
+                <h2>Raspberry Pi</h2>
+                <div class="sub" id="sysSub">The city's brain · runs this dashboard</div>
+              </div>
+            </div>
+            <span class="tag" id="sysPill">Waiting</span>
+          </div>
+          <div class="sysTop">
+            <div><div class="big" id="sysTemp">--</div><div class="sysWord" id="sysWord">CPU temperature</div></div>
+            <div class="sysTemp">
+              <div class="sysBar"><i id="sysKnob"></i></div>
+              <div class="sysLeg"><span style="left:0">30</span><span style="left:50%">55</span><span style="left:80%">70</span><span style="left:100%">80°</span></div>
+            </div>
+          </div>
+          <div class="sysPow" id="sysPow" hidden><span>⚡</span><div id="sysPowTxt"></div></div>
+          <div class="seisStats sysStats">
+            <div><span>Power</span><b id="sysPower">--</b><small id="sysPowerS">&nbsp;</small></div>
+            <div><span>CPU load</span><b id="sysCpu">--</b><div class="sysMini"><i id="sysCpuB"></i></div></div>
+            <div><span>Memory</span><b id="sysMem">--</b><div class="sysMini"><i id="sysMemB"></i></div></div>
+            <div><span>Wifi</span><b id="sysWifi">--</b><small id="sysWifiS">&nbsp;</small></div>
+            <div><span>Up time</span><b id="sysUp">--</b><small id="sysUpS">&nbsp;</small></div>
+            <div><span>SD card</span><b id="sysDisk">--</b><div class="sysMini"><i id="sysDiskB"></i></div></div>
+          </div>
+          <div class="sysFoot">
+            <div class="foot" id="sysAddr">Waiting for the Pi</div>
+            <button class="gbtn ghost" id="sysRestart" type="button">Restart dashboard</button>
+          </div>
+          <div class="mmsg" id="sysMsg"></div>
+        </section>
+
         <!-- Parking gate -->
         <section class="card white" id="c-gate">
           <div class="head">
@@ -2030,41 +2240,37 @@ DASHBOARD_HTML = """<!DOCTYPE html>
           </div>
         </section>
 
-
-        <!-- Raspberry Pi -->
-        <section class="card white" id="c-sys">
+        <!-- Traffic density -->
+        <section class="card white" id="c-dens">
           <div class="head">
             <div class="hl">
-              <span class="icon lav"><svg viewBox="0 0 24 24"><rect x="5" y="5" width="14" height="14" rx="2.5"/><rect x="9" y="9" width="6" height="6" rx="1"/><path d="M9 2v3M15 2v3M9 19v3M15 19v3M2 9h3M2 15h3M19 9h3M19 15h3"/></svg></span>
+              <span class="icon peach"><svg viewBox="0 0 24 24"><path d="M5 16V11l2-5h10l2 5v5"/><path d="M3 16h18v3H3z"/><circle cx="7.5" cy="13" r="1"/><circle cx="16.5" cy="13" r="1"/></svg></span>
               <div>
-                <h2>Raspberry Pi</h2>
-                <div class="sub" id="sysSub">The city's brain · runs this dashboard</div>
+                <h2>Traffic Density</h2>
+                <div class="sub">Vehicle counter · traffic ultrasonic</div>
               </div>
             </div>
-            <span class="tag" id="sysPill">Waiting</span>
+            <span class="tag" id="densPill">Waiting</span>
           </div>
-          <div class="sysTop">
-            <div><div class="big" id="sysTemp">--</div><div class="sysWord" id="sysWord">CPU temperature</div></div>
-            <div class="sysTemp">
-              <div class="sysBar"><i id="sysKnob"></i></div>
-              <div class="sysLeg"><span style="left:0">30</span><span style="left:50%">55</span><span style="left:80%">70</span><span style="left:100%">80°</span></div>
+          <div class="densTop">
+            <div><span class="big" id="densRate">--</span><span class="seisOf">/min</span><div class="seisWord" id="densWord">Vehicles a minute (last 5 min)</div></div>
+            <div class="densG">
+              <div class="dp"><span>Road density</span><b id="densPct">--%</b></div>
+              <div class="densBar"><i id="densFill"></i></div>
             </div>
           </div>
-          <div class="sysPow" id="sysPow" hidden><span>⚡</span><div id="sysPowTxt"></div></div>
-          <div class="seisStats sysStats">
-            <div><span>Power</span><b id="sysPower">--</b><small id="sysPowerS">&nbsp;</small></div>
-            <div><span>CPU load</span><b id="sysCpu">--</b><div class="sysMini"><i id="sysCpuB"></i></div></div>
-            <div><span>Memory</span><b id="sysMem">--</b><div class="sysMini"><i id="sysMemB"></i></div></div>
-            <div><span>Wifi</span><b id="sysWifi">--</b><small id="sysWifiS">&nbsp;</small></div>
-            <div><span>Up time</span><b id="sysUp">--</b><small id="sysUpS">&nbsp;</small></div>
-            <div><span>SD card</span><b id="sysDisk">--</b><div class="sysMini"><i id="sysDiskB"></i></div></div>
+          <div class="densBars" id="densBars" aria-label="Vehicles per minute, last 30 minutes"></div>
+          <div class="seisAxis"><span>30 min ago</span><span>15 min</span><span>now</span></div>
+          <div class="seisStats">
+            <div><span>Last 30 min</span><b id="densTot">--</b></div>
+            <div><span>Avg gap</span><b id="densGap">--</b></div>
+            <div><span>Busiest min</span><b id="densMax">--</b></div>
+            <div><span>Sensor saw</span><b id="densLive">--</b></div>
           </div>
-          <div class="sysFoot">
-            <div class="foot" id="sysAddr">Waiting for the Pi</div>
-            <button class="gbtn ghost" id="sysRestart" type="button">Restart dashboard</button>
-          </div>
-          <div class="mmsg" id="sysMsg"></div>
+          <div class="gList densLog"><div class="gHead"><b>Vehicle log</b><span>newest first</span></div><ul id="densLog"></ul></div>
+          <div class="foot">Each time something passes within 20 cm of the traffic sensor it is logged as a vehicle (live). Sample traffic fills in the rest, like a real town road.</div>
         </section>
+
 
         <!-- Seismic monitor -->
         <section class="card white" id="c-seis">
@@ -2235,10 +2441,14 @@ function fmtAgo(sec) {
   if (sec < 3600) return Math.round(sec / 60) + "m ago";
   return Math.round(sec / 3600) + "h ago";
 }
-function nanoFresh() { return nanoConnected && lastRecv > 0 && (Date.now() - lastRecv) < 5000; }
-function mtnFresh() { return mSeenAt > 0 && (Date.now() - mSeenAt) < 6000; }
+// A node is "offline" only after NODE_GRACE_MS of silence (wifi on a phone hotspot often drops a packet or two),
+// and only while the page itself is getting data from the Pi (otherwise it's the page's link, not the node).
+const NODE_GRACE_MS = 10000, LINK_OK_MS = 4000;
+function linkOk() { return lastRecv > 0 && Date.now() - lastRecv < LINK_OK_MS; }
+function nanoFresh() { return nanoConnected && lastRecv > 0 && (Date.now() - lastRecv) < NODE_GRACE_MS; }
+function mtnFresh() { return mSeenAt > 0 && (Date.now() - mSeenAt) < NODE_GRACE_MS; }
 function wxFresh() { return wxAt > 0 && (Date.now() - wxAt) < 20 * 60 * 1000; }
-function trFresh() { return trSeenAt > 0 && (Date.now() - trSeenAt) < 3000; }
+function trFresh() { return trSeenAt > 0 && (Date.now() - trSeenAt) < NODE_GRACE_MS; }
 function freshFor(k) { return k === "Temp" ? wxFresh() : CARDS[k].mtn ? mtnFresh() : nanoFresh(); }
 
 // ---- temperature gauge (0-50 C) ----
@@ -2475,7 +2685,7 @@ function paintAlarm() {
 }
 
 // ---- popups (toasts) for city events: fire only when something changes ----
-const TOAST_MAX = 5, TOAST_MS = 8000, WARMUP_MS = 3000;
+const TOAST_MAX = 4, TOAST_MS = 8000, WARMUP_MS = 12000;
 const pageStart = Date.now();
 const cond = {};
 function chime(kind) {
@@ -2495,10 +2705,12 @@ function chime(kind) {
     o.stop(at + 0.47);
   });
 }
-function toast(kind, title, text) {
+function toast(kind, title, text, key) {
   const box = $("toasts");
+  if (key) [...box.children].forEach(c => { if (c.dataset.key === key) c.remove(); });
   while (box.children.length >= TOAST_MAX) box.firstChild.remove();
   const t = el("div", "toast " + kind);
+  if (key) t.dataset.key = key;
   t.setAttribute("role", "status");
   t.appendChild(el("span", "ti", kind === "warn" ? "!" : kind === "ok" ? "✓" : "i"));
   const body = el("div", "tt");
@@ -2518,8 +2730,8 @@ function watch(key, state, on, off) {
   const prev = cond[key];
   cond[key] = state;
   if (prev === undefined || prev === state || Date.now() - pageStart < WARMUP_MS) return;
-  if (state) toast(on[0], on[1], on[2]);
-  else if (off) toast(off[0], off[1], off[2]);
+  if (state) toast(on[0], on[1], on[2], key);
+  else if (off) toast(off[0], off[1], off[2], key);
 }
 function watchEvents() {
   const st = k => (freshFor(k) && tagState[k]) ? tagState[k] : null;
@@ -2541,8 +2753,8 @@ function watchEvents() {
    ["tr", "Traffic node", trFresh(), trSeenAt > 0],
    ["se", "Seismic node", seisFresh(), seisSeenAt > 0]].forEach(n => {
     if (!n[3]) return;                       // never seen yet: nothing to report
-    watch("node-" + n[0], !n[2],
-          ["warn", n[1] + " offline", "No data for a few seconds: check its power and wifi"],
+    watch("node-" + n[0], linkOk() ? !n[2] : null,   // page link down: not the node's fault, say nothing
+          ["warn", n[1] + " offline", "No data for 10 seconds: check its power and wifi"],
           ["ok", n[1] + " back online", "Receiving data again"]);
   });
 }
@@ -2614,6 +2826,7 @@ function render(data) {
   }
   if (data.gate) gateRender(data.gate);
   if (data.system) { sysd = data.system; sysAt = Date.now() - data.system.ageSec * 1000; }
+  if (data.density) { dens = data.density; densAt = Date.now(); }
   if (data.matrix) { mxSeenAt = Date.now() - data.matrix.ageSec * 1000; mxScreen = data.matrix.screen || null; }
   if (data.alarm) {
     alarmActive = !!data.alarm.active;
@@ -2659,7 +2872,7 @@ function oT(x, y, size, s, anchor, fill) {
 }
 function oHead(t) { return oT(0, 7, 1, t) + '<line class="ln" x1="0" y1="10.5" x2="128" y2="10.5"/>'; }
 function paintDisplay() {
-  const on = mxSeenAt > 0 && (Date.now() - mxSeenAt) < 6000;
+  const on = mxSeenAt > 0 && (Date.now() - mxSeenAt) < NODE_GRACE_MS;
   const scr = on ? (mxScreen || "wait") : "off";
   $("oledGlass").classList.toggle("off", !on);
   const pill = $("dispPill");
@@ -2703,7 +2916,7 @@ function paintDisplay() {
   } else if (scr === "temp") {
     h = oHead("TEMPERATURE") + oT(60, 44, 3, wxFresh() ? wxTemp.toFixed(1) : "--", "middle") +
         '<circle class="ln" stroke-width="1.5" cx="' + (wxFresh() ? 106 : 92) + '" cy="23" r="2.5"/>' +
-        oT(wxFresh() ? 110 : 96, 36, 2, "C") + oT(64, 62, 1, wxPlace || "Koothuparamba", "middle");
+        oT(wxFresh() ? 110 : 96, 36, 2, "C") + oT(64, 62, 1, wxPlace || "Thaliparamba", "middle");
   } else if (scr === "air") {
     h = oHead("AIR QUALITY");
     if (gas) {
@@ -2767,17 +2980,18 @@ function paint() {
   $("pMtn").className = "pulse " + (mf ? "live" : (mSeenAt ? "err" : ""));
   $("tMtn").textContent = mf ? "Online" : mSeenAt ? "Offline" : "Waiting";
 
-  const mxOn = mxSeenAt > 0 && (Date.now() - mxSeenAt) < 6000;
+  const mxOn = mxSeenAt > 0 && (Date.now() - mxSeenAt) < NODE_GRACE_MS;
   $("pMx").className = "pulse " + (mxOn ? "live" : (mxSeenAt ? "err" : ""));
   $("tMx").textContent = mxOn ? "Online" : mxSeenAt ? "Offline" : "Waiting";
   paintDisplay();
   paintSeismic();
   paintGate();
   paintSys();
+  paintDensity();
   const sf = seisFresh() && seis;
   $("zd-seismic").className = "tdot" + (!sf ? "" : quakeActive || seisLevel(seis.intensity) >= 2 ? " warn" : " ok");
   $("zt-seismic").textContent = !sf ? (seisSeenAt ? "Offline" : "No data") : quakeActive ? "TSUNAMI ALERT" : SEIS_WORDS[seisLevel(seis.intensity)];
-  const dOn = mxSeenAt > 0 && (Date.now() - mxSeenAt) < 6000;
+  const dOn = mxSeenAt > 0 && (Date.now() - mxSeenAt) < NODE_GRACE_MS;
   $("zd-display").className = "tdot" + (dOn ? " ok" : "");
   $("zt-display").textContent = dOn ? "Showing " + (DISP_NAMES[mxScreen] || "status").toLowerCase() : mxSeenAt ? "Offline" : "No data";
   const now = new Date(), hr = now.getHours();
@@ -2791,7 +3005,7 @@ function paint() {
 // ---- seismic monitor: live shake trace (5 samples a second, last 60 s) ----
 const SEIS_N = 300, SEA_MOVE_CM = 2, QUAKE_SHAKE_MIN = 50;   // same as on the Pi
 let seis = null, seisSeenAt = 0, seisTrace = [], quakeActive = false, quakeAt = 0, quakePeak = 0;
-function seisFresh() { return seisSeenAt > 0 && (Date.now() - seisSeenAt) < 3000; }
+function seisFresh() { return seisSeenAt > 0 && (Date.now() - seisSeenAt) < NODE_GRACE_MS; }
 function seisLevel(v) { return v < 10 ? 0 : v < 35 ? 1 : v < 65 ? 2 : 3; }
 const SEIS_WORDS = ["Calm", "Light shaking", "Moderate shaking", "Strong shaking"];
 function seisSample() {
@@ -2847,6 +3061,77 @@ function paintSeismic() {
   $("seisPulse").textContent = (seis.pulses * 5) + " /s";
 }
 setInterval(seisSample, 200);
+
+// ---- City Risk: one 0-100 score from every hazard (worked out with the AI model every 2 s) ----
+const RISK_HZ = [{k: "tsunami", name: "Tsunami", w: 1}, {k: "slide", name: "Landslide", w: 0.9},
+                 {k: "flood", name: "Flood", w: 0.85}, {k: "air", name: "Air pollution", w: 0.8},
+                 {k: "heat", name: "Heat", w: 0.6}];
+function riskBuild() {
+  $("riskHz").innerHTML = RISK_HZ.map(h => '<div class="rz" id="rz-' + h.k + '"><span>' + h.name + '</span><b id="rzv-' + h.k +
+    '">--</b><div class="sysMini"><i id="rzb-' + h.k + '"></i></div></div>').join("");
+}
+function paintRisk(p, why) {
+  let top = null, sum = 0;
+  RISK_HZ.forEach(h => {
+    const v = Math.max(0, Math.min(1, p[h.k] || 0)), wv = v * h.w;
+    sum += wv;
+    if (!top || wv > top.wv) top = {k: h.k, name: h.name, wv: wv, v: v};
+    $("rzv-" + h.k).textContent = Math.round(v * 100) + "%";
+    sysBar("rzb-" + h.k, v * 100, 60);
+  });
+  let score = Math.round(100 * (0.75 * top.wv + 0.25 * sum / RISK_HZ.length));
+  if (quakeActive || alarmActive) score = Math.max(score, 92);
+  score = Math.max(0, Math.min(100, score));
+  const lvl = score < 30 ? ["Low", "ok"] : score < 60 ? ["Medium", "info"] : ["High", "warn"];
+  countTo($("riskVal"), score);
+  $("riskVal").style.color = score >= 60 ? "#e0362a" : score >= 30 ? "#c2410c" : "";
+  setTag("riskPill", lvl[0] + " risk", lvl[1]);
+  $("riskKnob").style.left = score + "%";
+  $("c-risk").classList.toggle("hi", score >= 60);
+  RISK_HZ.forEach(h => $("rz-" + h.k).classList.toggle("lead", score >= 15 && h.k === top.k));
+  const w = $("riskWhy");
+  w.textContent = "";
+  if (score < 15) { w.appendChild(el("b", "", "All clear · ")); w.appendChild(document.createTextNode("every hazard is low, the city is safe")); }
+  else { w.appendChild(el("b", "", "Main reason: " + top.name + " · ")); w.appendChild(document.createTextNode(why[top.k] || "")); }
+}
+riskBuild();
+
+// ---- Traffic density: vehicles the traffic ultrasonic counted (+ sample traffic) ----
+const DENS_ICON = {Car: "🚗", Bike: "🏍️", Auto: "🛺", Bus: "🚌"};
+let dens = null, densAt = 0, densLogSig = "";
+(function densBuild() { let h = ""; for (let i = 0; i < 30; i++) h += "<i></i>"; $("densBars").innerHTML = h; })();
+function paintDensity() {
+  const d = dens;
+  if (!d) return;
+  const fresh = trFresh();
+  $("densRate").textContent = d.perMin.toFixed(1);
+  $("densPct").textContent = d.pct + "%";
+  const f = $("densFill");
+  f.style.width = Math.max(2, d.pct) + "%";
+  f.className = d.pct >= 70 ? "hi" : d.pct >= 35 ? "mid" : "";
+  setTag("densPill", d.level + " traffic", d.pct >= 70 ? "warn" : d.pct >= 35 ? "info" : "ok");
+  $("densWord").textContent = "Vehicles a minute · " + (d.level === "Heavy" ? "road is jammed" : d.level === "Medium" ? "steady flow" : "free flowing");
+  const bars = $("densBars").children, mx = Math.max(4, d.busiest);
+  for (let i = 0; i < 30; i++) bars[i].style.height = Math.max(4, d.bars[i] / mx * 100) + "%";
+  $("densTot").textContent = d.total30 + " vehicles";
+  $("densGap").textContent = d.gapSec === null ? "--" : Math.round(d.gapSec) + " s";
+  $("densMax").textContent = d.busiest + " /min";
+  $("densLive").textContent = fresh || d.liveTotal ? d.liveTotal + " live" : "sensor off";
+  const ul = $("densLog"), sig = d.log.map(v => v.type + v.ago.toFixed(0)).join();
+  if (sig === densLogSig) return;
+  densLogSig = sig;
+  ul.textContent = "";
+  d.log.forEach(v => {
+    const li = el("li", "");
+    li.appendChild(el("span", "vt", DENS_ICON[v.type] || "🚗"));
+    const gi = el("div", "gi");
+    gi.appendChild(el("b", "", v.type + (v.cm !== null ? " · " + Math.round(v.cm) + " cm" : "")));
+    li.appendChild(gi);
+    li.appendChild(el("span", "lv" + (v.live ? " live" : ""), v.live ? "live" : "sample"));
+    li.appendChild(el("span", "ago", v.ago < 60 ? Math.round(v.ago) + " s ago" : Math.round(v.ago / 60) + " min ago"));
+    ul.appendChild(li);
+  });
+}
 
 // ---- Raspberry Pi system card ----
 let sysd = null, sysAt = 0, sysSure = false, sysSureT = 0, sysRestarting = 0;
@@ -2920,7 +3205,7 @@ $("sysRestart").addEventListener("click", () => {
 });
 // ---- parking gate: NFC reader + servo on the seismic NodeMCU ----
 let gt = null, gateSeenAt = 0, gateScanAt = 0, gateMsgTimer = 0, gateSure = "", gateSureTimer = 0, gateSig = "", gateLogSig = "";
-function gateFresh() { return gateSeenAt > 0 && (Date.now() - gateSeenAt) < 3000; }
+function gateFresh() { return gateSeenAt > 0 && (Date.now() - gateSeenAt) < NODE_GRACE_MS; }
 function cardFmt(u) { return (u.match(/.{1,2}/g) || []).join(":"); }
 function esc(t) { return String(t).replace(/[&<>"]/g, c => ({"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;"})[c]); }
 function gateMsg(text) {
@@ -3115,6 +3400,21 @@ function aiTick() {
   // 3. rain next hour: raining now, recent rain, afternoon storm window, heat
   const afternoon = hod >= 13 && hod <= 19 ? 1 : 0;
   const pRain = sig(-2 + (raining ? 2.4 : 0) + 1.4 * X[1] + 0.9 * afternoon + (temp > 30 ? 0.6 : 0) - (hod >= 7 && hod <= 17 ? 0.8 * Math.max(0, light - 0.7) : 0));
+  // City Risk inputs: tsunami (shake + water movement), flood (rain + wet soil), heat (temperature)
+  const shakeN = seisFresh() && seis ? seis.intensity / 100 : 0;
+  const waveN = seisFresh() && seis && seis.cm !== null ? Math.min(1, seis.move / (SEA_MOVE_CM * 2)) : 0;
+  const pTsu = quakeActive ? 1 : Math.min(0.95, 1.5 * shakeN * waveN + 0.25 * Math.max(shakeN, waveN));
+  const pFlood = sig(-4 + 2.2 * wet + 2.2 * X[1] + 1.6 * soilWet + (raining ? 1 : 0));
+  const pHeat = Math.max(0, Math.min(1, (temp - 31) / 7));
+  paintRisk({tsunami: pTsu, slide: pSlide, flood: pFlood, air: pAir, heat: pHeat}, {
+    tsunami: quakeActive ? "tsunami alert active, move people away from the coast" :
+             "shake " + Math.round(shakeN * 100) + "/100, water moved " + (seis && seis.move ? seis.move.toFixed(1) : "0") + " cm",
+    slide: alarmActive ? "disaster alarm on the mountain" : "wet ground " + Math.round(soilWet * 100) + "% and movement on the slope",
+    flood: raining ? "raining now, soil " + Math.round(soilWet * 100) + "% wet" : Math.round(rain3) + " min rain in 3 h, soil " + Math.round(soilWet * 100) + "% wet",
+    air: gasOn ? "gas sensor triggered" : "gas level " + Math.round(gas * 100) + "%",
+    heat: Math.round(temp) + " °C in " + (wxPlace || "the city")
+  });
+
   // 4. traffic next hour: same hour yesterday blended with this hour so far
   let cars = null, ySame = null, curH = null;
   if (hs.length >= 24) {
@@ -3332,14 +3632,24 @@ function stripFade() {
 window.addEventListener("resize", stripFade);
 document.querySelector(".nodes").addEventListener("scroll", stripFade, {passive: true});
 setInterval(stripFade, 1000);
-setInterval(paint, 1000);
+setInterval(() => { if (!document.hidden) paint(); }, 1000);   // no work while the tab is hidden
 paint();
 
+// live link to the Pi: reconnects by itself, and restarts the link if it goes quiet without an error
+let es = null, esAt = 0;
 function connect() {
-  const es = new EventSource("/stream");
-  es.onmessage = e => render(JSON.parse(e.data));
-  es.onerror = () => { linkLost = true; paint(); };
+  if (es) es.close();
+  esAt = Date.now();
+  es = new EventSource("/stream");
+  es.onmessage = e => { try { render(JSON.parse(e.data)); } catch (err) { console.log("bad data", err); } };
+  es.onerror = () => { linkLost = true; };
 }
+setInterval(() => {
+  if (Date.now() - Math.max(lastRecv, esAt) > 6000) { linkLost = true; connect(); }
+}, 2000);
+document.addEventListener("visibilitychange", () => {
+  if (!document.hidden) { if (Date.now() - lastRecv > 3000) connect(); paint(); }
+});
 connect();
 </script>
 </body>
@@ -3510,18 +3820,22 @@ class Handler(BaseHTTPRequestHandler):
             self.send_header("Connection", "keep-alive")
             self.end_headers()
 
-            q = queue.Queue(maxsize=5)
+            q = queue.Queue(maxsize=2)
             with subscribers_lock:
                 subscribers.append(q)
             try:
+                self.wfile.write(b"retry: 2000\n\n")                 # browser reconnects after 2 s
                 initial = snapshot()
                 self.wfile.write(f"data: {initial}\n\n".encode("utf-8"))
                 self.wfile.flush()
                 while True:
-                    payload = q.get()
-                    self.wfile.write(f"data: {payload}\n\n".encode("utf-8"))
+                    try:
+                        payload = q.get(timeout=10)
+                        self.wfile.write(f"data: {payload}\n\n".encode("utf-8"))
+                    except queue.Empty:
+                        self.wfile.write(b": ping\n\n")              # keeps phones/hotspots from closing it
                     self.wfile.flush()
-            except (BrokenPipeError, ConnectionResetError):
+            except (OSError, ValueError):
                 pass
             finally:
                 with subscribers_lock:
@@ -3574,6 +3888,7 @@ def main():
     threading.Thread(target=alarm_loop, daemon=True).start()
     threading.Thread(target=matrix_loop, daemon=True).start()
     threading.Thread(target=system_loop, daemon=True).start()
+    threading.Thread(target=broadcast_loop, daemon=True).start()
     load_gate_cards()
     make_sample_history()
     hist_event("system", "Dashboard started")

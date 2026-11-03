@@ -49,7 +49,7 @@ The Arduino Nano is on USB serial instead, printing lines like
 | Method | Path | Purpose |
 |---|---|---|
 | GET | `/` | Dashboard page (gzip) |
-| GET | `/stream` | Live updates (Server-Sent Events) |
+| GET | `/stream` | Live updates (Server-Sent Events): at most 5 snapshots a second, at least 1 a second, plus a keep-alive ping; slow browsers get the newest snapshot instead of being dropped |
 | GET | `/data` | Current snapshot as JSON |
 | GET | `/history` | 24 h hourly values + event log |
 | GET | `/alarm.mp3` | Alarm sound |

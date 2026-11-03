@@ -22,7 +22,7 @@ const char *WIFI_SSID = "YOUR_WIFI_NAME";
 const char *WIFI_PASS = "YOUR_WIFI_PASSWORD";
 // ========================================================
 
-const char *PLACE = "Koothuparamba";     // shown under the temperature
+const char *PLACE = "Thaliparamba";     // shown under the temperature
 const unsigned int CMD_PORT    = 8769;   // the Pi sends the city status here
 const unsigned int STATUS_PORT = 8766;   // we say "I'm here" here
 

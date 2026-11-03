@@ -11,12 +11,14 @@ alarm on the mountain, a tsunami monitor, an NFC parking gate and a small status
 ## Features
 
 - **Live operations dashboard**: pastel, phone-friendly web page served by the Pi (port `8765`), updated instantly over Server-Sent Events
+- **City Risk score**: one 0-100 number (Low / Medium / High) from tsunami, landslide, flood, air and heat risk, with the main reason
 - **City overview**: one glance at weather, environment, security, seismic, lighting, traffic, the parking gate and the display
-- **Environment**: rain, gas (air quality) and soil moisture from an Arduino Nano; live temperature from the internet (Open-Meteo, Koothuparamba)
+- **Environment**: rain, gas (air quality) and soil moisture from an Arduino Nano; live temperature from the internet (Open-Meteo, Thaliparamba, Kannur)
 - **Mountain disaster alarm**: PIR motion + vibration on together for 0.5 s → red banner, siren sound and a flashing *DANGER* screen
 - **Tsunami monitor**: ultrasonic sees the water move 2 cm or more + shake level 50 or more, together for 0.5 s → *Tsunami alert* with a live seismograph
 - **NFC parking gate**: a saved card on the RC522 reader opens a servo barrier for 2 s; unknown cards stay shut and can be allowed from the dashboard
 - **Smart traffic signal**: manual control from the dashboard, or auto mode where an ultrasonic sensor turns the light yellow (< 20 cm) and red (< 10 cm)
+- **Traffic density**: every vehicle the traffic ultrasonic sees is logged; vehicles a minute, road density %, a 30-minute chart and a vehicle log (topped up with labelled sample traffic)
 - **Street lighting**: ambient light level from an LDR
 - **Status display**: 0.96" OLED that rotates weather, temperature and air quality every 5 s, with a live copy on the dashboard
 - **City AI card**: weighted risk scores (landslide, air pollution, rain, traffic) calculated from the live sensors every 2 s

@@ -102,7 +102,7 @@ At the top of `serial_dashboard.py`:
 | Setting | Default | Meaning |
 |---|---|---|
 | `HTTP_PORT` | `8765` | Dashboard web port |
-| `WEATHER_PLACE`, `WEATHER_LAT`, `WEATHER_LON` | Koothuparamba | Where the live temperature comes from |
+| `WEATHER_PLACE`, `WEATHER_LAT`, `WEATHER_LON` | Thaliparamba (12.04, 75.36) | Where the live temperature comes from |
 | `ALARM_BOTH_SEC` / `ALARM_CLEAR_SEC` | 0.5 s / 30 s | Mountain alarm: trigger time / auto-stop after quiet |
 | `SEA_MOVE_CM` / `QUAKE_SHAKE_MIN` | 2.0 cm / 50 | Tsunami alert: water movement that counts / shake level that counts |
 | `QUAKE_BOTH_SEC` / `QUAKE_CLEAR_SEC` | 0.5 s / 30 s | Tsunami alert: trigger time / auto-stop after calm |
