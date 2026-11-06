@@ -107,3 +107,5 @@ At the top of `serial_dashboard.py`:
 | `SEA_MOVE_CM` / `QUAKE_SHAKE_MIN` | 2.0 cm / 50 | Tsunami alert: water movement that counts / shake level that counts |
 | `QUAKE_BOTH_SEC` / `QUAKE_CLEAR_SEC` | 0.5 s / 30 s | Tsunami alert: trigger time / auto-stop after calm |
 | `CITY_UTC_OFFSET_MIN` | 330 | Time zone used for the history (India, UTC+5:30) |
+| `CAR_NEAR_CM` | 20 | Traffic: something closer than this counts as one vehicle |
+| `DENSITY_FULL_PER_MIN` / `DENSITY_WINDOW_MIN` | 12 / 5 | Traffic density: vehicles a minute that count as 100 % / minutes averaged |

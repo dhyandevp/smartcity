@@ -1,5 +1,7 @@
 # Network protocol
 
+![How the city talks](images/system_diagram.png)
+
 The nodes and the Pi talk with tiny JSON messages over **UDP** on the local wifi.
 Nodes **broadcast** their messages, so the Pi finds them without any IP address being
 configured; the Pi remembers each sender's IP to send commands back.
@@ -50,7 +52,7 @@ The Arduino Nano is on USB serial instead, printing lines like
 |---|---|---|
 | GET | `/` | Dashboard page (gzip) |
 | GET | `/stream` | Live updates (Server-Sent Events): at most 5 snapshots a second, at least 1 a second, plus a keep-alive ping; slow browsers get the newest snapshot instead of being dropped |
-| GET | `/data` | Current snapshot as JSON |
+| GET | `/data` | Current snapshot as JSON (sensors, nodes, alarms, `gate`, `system`, `density`) |
 | GET | `/history` | 24 h hourly values + event log |
 | GET | `/alarm.mp3` | Alarm sound |
 | POST | `/traffic` | Mode or single light |

@@ -3055,7 +3055,7 @@ function paintSeismic() {
   pill.className = "tag " + (quakeActive || L >= 2 ? "warn" : L === 1 ? "info" : "ok");
   $("seisCm").textContent = seis.cm === null ? "no echo" : seis.cm.toFixed(1) + " cm";
   const seaMoving = seis.cm !== null && seis.move >= SEA_MOVE_CM;
-  $("seisBase").textContent = seis.cm === null ? "--" : seaMoving ? "Moving " + seis.move.toFixed(1) + " cm" : "Still";
+  $("seisBase").textContent = seis.cm === null ? "--" : seaMoving ? "Moving" : "Still";
   $("seisBase").style.color = seaMoving ? "#e0362a" : "";
   $("seisMove").textContent = seis.intensity + " / 100";
   $("seisPulse").textContent = (seis.pulses * 5) + " /s";

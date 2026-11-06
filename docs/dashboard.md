@@ -3,7 +3,9 @@
 Open `http://<pi-address>:8765` on any phone, tablet or laptop on the same wifi.
 The page works in portrait and landscape and updates instantly when a sensor changes.
 
-![Full dashboard](images/dashboard_full.png)
+![Dashboard](images/dashboard_top.png)
+
+The whole page in one picture: [images/dashboard_page.png](images/dashboard_page.png).
 
 ## Top bar
 
@@ -32,6 +34,42 @@ The page works in portrait and landscape and updates instantly when a sensor cha
 | Parking Gate | NFC card reader + servo barrier: Open / Closed, last card (Allowed / Denied), opens today, saved cards and recent taps |
 | City History | 24 h charts and an event log |
 
+## City Risk
+
+![City Risk](images/city_risk.png)
+
+One number for the whole city, worked out with the City AI every 2 s. Each hazard gets a
+0-100 % chance (tsunami from shaking × water movement, landslide and air pollution from the City AI,
+flood from rain + wet soil, heat from the temperature). The score is mostly the **biggest** hazard
+(75 %) plus a little of the average of all five (25 %), so one serious danger is never hidden by
+four calm ones. An active alarm pushes it to at least 92. The box under the bar names the hazard
+that is pushing the score up.
+
+## Traffic density
+
+![Traffic density](images/traffic_density.png)
+
+- A vehicle is counted each time something comes closer than **20 cm** to the traffic ultrasonic
+  (`CAR_NEAR_CM`), once per pass. It is logged as **live** with its distance.
+- Vehicles a minute = vehicles in the last 5 minutes ÷ 5. **12 a minute = 100 %** road density
+  (`DENSITY_FULL_PER_MIN`): under 35 % Low, under 70 % Medium, above that Heavy.
+- **Sample** traffic (Car, Bike, Auto, Bus) keeps the road looking like a real town: quiet at night,
+  busiest 8-10 am and 4-7 pm. Sample entries are always marked *sample*; *Sensor saw* counts only real ones.
+
+## Seismic monitor and tsunami alert
+
+![Seismic monitor during a tsunami](images/seismic_tsunami.png)
+
+![Tsunami alert banner](images/tsunami_alert.png)
+
+## Raspberry Pi
+
+![Raspberry Pi card](images/pi_card.png)
+
+Refreshed every 5 s. **Needs attention** when the CPU is 80 °C or hotter, the power is too low
+right now, or wifi is off; **Check** for 70 °C+, a power dip since boot, weak wifi or less than
+1 GB free on the SD card. *Restart dashboard* needs two taps and is back in about 3 s.
+
 ## Alarms
 
 | Alarm | Fires when | Stops |
@@ -49,7 +87,7 @@ its link to the Pi (then the header says *Reconnecting* and the page reconnects 
 
 ## Parking gate
 
-![Parking gate](images/parking_gate.png)
+![Parking gate](images/parking_gate_cards.png)
 
 - Tap a **saved** card on the RC522 reader: the barrier opens for **2 s**, then closes by itself.
 - Tap an **unknown** card: the gate stays shut and a peach **New card at the gate** box
@@ -62,7 +100,7 @@ its link to the Pi (then the header says *Reconnecting* and the page reconnects 
 
 ## City AI
 
-![City AI](images/city_ai.png)
+![City AI](images/city_ai_card.png)
 
 Every 2 seconds the dashboard turns the live sensor readings (rain, soil, gas and its
 trend, vibration, motion, light, temperature, seismic shaking) and the last 24 hours of
@@ -80,7 +118,7 @@ is an illustration of the inputs and outputs.
 
 ## History
 
-![History](images/history.png)
+![History](images/history_card.png)
 
 Hourly charts for temperature, rainfall, air quality, soil moisture, ambient light and
 traffic, plus an event log. Because the model is not running all day, the history starts

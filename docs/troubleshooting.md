@@ -21,6 +21,12 @@ after `i=` in `cmdline.txt` and the `instance-id:` in `meta-data` to the same ne
 (e.g. `rpi-imager-1793600000001`), then boot. Afterwards run `ssh-keygen -R admin.local` on the
 PC, because the Pi gets a new SSH key.
 
+## Nodes keep flashing "offline" while they are working
+
+Fixed on 3 Nov 2026: update `serial_dashboard.py` on the Pi. Older versions dropped a phone or laptop
+that fell a little behind, so every node looked offline at the same time. Now a node only shows
+*offline* after 10 s of real silence, and the page reconnects by itself.
+
 ## A node shows "Waiting" on the dashboard
 
 The Pi has never heard from it.
