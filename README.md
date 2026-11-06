@@ -171,12 +171,17 @@ Download the file and open it in any browser; turn the sound on and press **Play
 
 ![Smart City film](docs/images/film.png)
 
-## Contributors
+## 🏛️ Project Architecture & Team Roles
 
-| | Role |
+This project was developed through a specialized collaboration between physical architectural construction and full-stack embedded systems engineering:
+
+| Contributor / Lead | Role & Scope of Work |
 |---|---|
-| **[@dhyandevp](https://github.com/dhyandevp)** | Main contributor |
-| [@santhichith1-cmyk](https://github.com/santhichith1-cmyk) | Contributor |
+| **[@dhyandevp](https://github.com/dhyandevp)** (Dhyandev P) | **Lead Technical Engineer & Software Architect**<br>• Core system architecture and distributed wireless sensor network design.<br>• Embedded firmware development across all IoT nodes (ESP8266 / Arduino C++).<br>• Central Raspberry Pi hub, telemetry pipeline, and UDP communication protocols.<br>• Full-stack browser operations dashboard, City Risk analytics engine, and audio system.<br>• Circuit design, sensor calibration, and end-to-end hardware-software integration. |
+| **[@santhichith1-cmyk](https://github.com/santhichith1-cmyk)** (Santhichith A) & **Rishdev P V** | **Project Leads & Physical Structural Engineering**<br>• Architectural planning, physical miniature city layout, and scale model craftsmanship.<br>• Structural fabrication, building housing, wiring conduits, and road/terrain zoning.<br>• Primary competition defense and live demonstration at the District Science Fair. |
+
+> [!NOTE]
+> **Upstream Repository:** The original primary repository for this project is hosted at [santhichith1-cmyk/smartcity](https://github.com/santhichith1-cmyk/smartcity.git).
 
 ## License
 
