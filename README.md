@@ -114,6 +114,14 @@ To start it automatically at boot, follow [docs/raspberry-pi-setup.md](docs/rasp
 |---|---|
 | ![Parking gate](docs/images/parking_gate.png) | ![Wiring](docs/images/seismic_wiring.png) |
 
+## The story film
+
+[`docs/smart-city-film.html`](docs/smart-city-film.html) is a 1:46 animated film (in Manglish) of the whole journey,
+from the first idea to **joint 3rd, A grade** at the Kannur District Sasthrolsavam 2026-27 (Working Model, HSS, 126 teams).
+Download the file and open it in any browser; turn the sound on and press **Play cheyyu**.
+
+![Smart City film](docs/images/film.png)
+
 ## Contributors
 
 | | Role |
